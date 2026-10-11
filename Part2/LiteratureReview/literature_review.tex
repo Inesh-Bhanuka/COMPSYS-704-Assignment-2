@@ -1,0 +1,154 @@
+% CS704 Project 2 -- Deliverable 1: Literature Review
+% Limit: 1 page excluding references. Compile with pdflatex (Overleaf: works as-is).
+% If the course template differs, paste everything between \begin{document}
+% and \end{document} into it.
+\documentclass[conference]{IEEEtran}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{cite}
+\usepackage[hidelinks]{hyperref}
+
+\begin{document}
+
+\title{Step and Orientation Detection with Low-Cost IMUs: A Literature Review}
+
+\author{\IEEEauthorblockN{Inesh Bhanuka}
+\IEEEauthorblockA{CS704 Project 2, University of Auckland\\
+inesh.bhanuka@gmail.com}}
+
+\maketitle
+
+\section{Introduction}
+Pedestrian dead reckoning (PDR) tracks a person from body-worn inertial
+sensors without infrastructure. Double-integrating low-cost MEMS
+acceleration diverges within seconds unless zero-velocity updates (ZUPT)
+are applied, which needs a foot-mounted sensor~\cite{jin2011}. Body-worn
+and handheld systems therefore use \emph{step-based} PDR,
+$\mathbf{p}_k=\mathbf{p}_{k-1}+L_k[\cos\theta_k,\ \sin\theta_k]^T$,
+which splits tracking into the two quantities our device must report:
+step events (with length $L_k$) and heading
+$\theta_k$~\cite{jin2011,tian2016}.
+
+\section{Step Detection}
+All reviewed works find steps as peaks in periodic acceleration. They
+differ in the \emph{signal} used and how \emph{thresholds} are set.
+Jin~et~al.~\cite{jin2011} rotate acceleration into the East-North-Up
+frame using the compass attitude and detect a peak followed by a valley
+on the vertical axis. A pair must differ by a calibrated $\Delta$ and be
+at least 150\,ms apart. Tian~et~al.~\cite{tian2016} first classify the
+carrying mode (holding, swinging, pocket) with a finite-state machine
+driven by gyroscope rate and gravity direction. They then low-pass the
+mode-specific axis at 5\,Hz and accept peaks above a fixed threshold with
+a 0.2\,s minimum spacing and a false-peak rejection window. Lee~et~al.~\cite{lee2015} skip both projection and classification. They use
+the orientation-invariant magnitude $|\mathbf{a}|$, with amplitude
+thresholds ($\mu\pm\sigma/\alpha$) and timing thresholds that adapt to
+recent step statistics. This reached 99.5\% accuracy over seven
+placements and 98.7\% when the phone pose changed mid-walk, against
+94.4\% for Samsung S-Health. Brajdic and Harle~\cite{brajdic2013}
+benchmarked eight step counters on 130 traces (27 subjects, six
+placements). Windowed peak detection was best (median error $<$1.3\%),
+every method undercounted, and frequency-domain methods degraded in the
+back pocket. They recommend gating with a standard-deviation walk
+detector, which also covers the stationary false-step case that
+Lee~et~al.\ leave open. For step length, the Weinberg model
+$L=K\sqrt[4]{a_{\max}-a_{\min}}$ is common~\cite{jin2011,kuang2018}.
+Tian's height and step-frequency model gave the lowest spread across
+users~\cite{tian2016}.
+
+\section{Orientation Estimation}
+Jin~et~al.~\cite{jin2011} used only accelerometer and compass, at under
+25\,Hz. Principal component analysis of horizontal acceleration was too
+unreliable at that rate, so heading came from integrating horizontal
+acceleration over 1.4\,s. Metal cabinets distorting the compass were a
+key error source. Fusing two pocketed phones with a MAP constraint cut
+the error by up to 73.7\%. Tian~et~al.~\cite{tian2016} averaged
+gyro-based yaw over each step (two steps in a pocket, to cancel leg
+swing) after unwrapping the $\pm180^\circ$ discontinuity. An
+\emph{adaptive offset compensation} step then learns the misalignment
+between phone and walking direction. Gyro drift was the dominant error
+source. Filter-based fusion handles drift and disturbance more formally.
+Yuan~et~al.~\cite{yuan2015} built a quaternion unscented Kalman filter
+(UKF): gyro rates propagate the quaternion, and accelerometer
+roll/pitch and magnetometer yaw correct it. This avoids gimbal lock and
+EKF linearisation error. It achieved $<$10$^\circ$ mean heading error
+waist-mounted, running on an STM32F4. Kuang~et~al.~\cite{kuang2018}
+used a 15-state EKF with zero-velocity and zero-angular-rate updates in
+quasi-static periods. The magnetometer is applied only as a
+\emph{relative} heading constraint while the field is detected as
+quasi-static, giving RMS heading errors of 2.3$^\circ$ (handheld) to
+16.6$^\circ$ (pocket).
+
+\begin{table}[!t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{2.5pt}
+\caption{Comparison of reviewed approaches}
+\label{tab:cmp}
+\begin{tabularx}{\columnwidth}{@{}l>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{1.55cm}@{}}
+\toprule
+Work & Step detection & Orientation & Result \\
+\midrule
+\cite{jin2011} & Vertical acc.\ (ENU), relative peak--valley & Compass; 2-device MAP fusion & $\le$73.7\% error cut \\
+\cite{tian2016} & FSM mode $\rightarrow$ axis; peak + rejection & Gyro yaw, step-avg., offset comp. & 98.91\% pos.\ accuracy \\
+\cite{kuang2018} & Acc.\ peak; Weinberg length & EKF, ZARU, quasi-static mag. & 2.3--16.6$^\circ$ RMS \\
+\cite{yuan2015} & -- & Quaternion UKF (G+A+M) & $<$10$^\circ$ mean \\
+\cite{lee2015} & $|\mathbf{a}|$ peak--valley, adaptive thresholds & -- & 99.5\%; 98.7\% pose change \\
+\cite{brajdic2013} & Benchmark; windowed peak best & -- & median err.\ $<$1.3\% \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Comparison and Implications}
+Table~\ref{tab:cmp} summarises the works and shows three trends. First,
+adaptive thresholds on $|\mathbf{a}|$~\cite{lee2015} are robust without
+classification. Mode-aware detection~\cite{tian2016} gains accuracy but
+needs per-mode tuning and missed 7.5\% of mode transitions. Second,
+magnetometer-only heading~\cite{jin2011} is cheap but easily distorted
+by nearby steel, a serious risk in a factory. The common remedy is gyro
+fusion with magnetic-disturbance gating~\cite{yuan2015,kuang2018}.
+Third, placement dominates error: pocket and swinging heading errors are
+4--7$\times$ the handheld case~\cite{kuang2018}. Since the SensorTile
+will be worn at a fixed body location, we plan two parts. Steps will
+come from adaptive peak--valley detection on $|\mathbf{a}|$ with a
+variance gate~\cite{lee2015,brajdic2013}. Heading will come from a
+tilt-compensated, hard/soft-iron-calibrated magnetometer that is
+rejected when the field magnitude or dip angle deviates, optionally
+fused with the on-board gyroscope~\cite{yuan2015,kuang2018}.
+
+\begin{thebibliography}{6}
+\bibitem{jin2011}
+Y.~Jin, H.-S. Toh, W.-S. Soh, and W.-C. Wong, ``A robust dead-reckoning
+pedestrian tracking system with low cost sensors,'' in \emph{Proc. IEEE
+Int. Conf. Pervasive Comput. Commun. (PerCom)}, Seattle, WA, USA, Mar.
+2011, pp.~222--230.
+
+\bibitem{tian2016}
+Q.~Tian, Z.~Salcic, K.~I.-K. Wang, and Y.~Pan, ``A multi-mode dead
+reckoning system for pedestrian tracking using smartphones,'' \emph{IEEE
+Sensors J.}, vol.~16, no.~7, pp.~2079--2093, Apr. 2016.
+
+\bibitem{kuang2018}
+J.~Kuang, X.~Niu, and X.~Chen, ``Robust pedestrian dead reckoning based
+on MEMS-IMU for smartphones,'' \emph{Sensors}, vol.~18, no.~5, Art.
+no.~1391, 2018, doi: 10.3390/s18051391.
+
+\bibitem{yuan2015}
+X.~Yuan, S.~Yu, S.~Zhang, G.~Wang, and S.~Liu, ``Quaternion-based
+unscented Kalman filter for accurate indoor heading estimation using
+wearable multi-sensor system,'' \emph{Sensors}, vol.~15, no.~5,
+pp.~10872--10890, 2015, doi: 10.3390/s150510872.
+
+\bibitem{lee2015}
+H.-H. Lee, S.~Choi, and M.-J. Lee, ``Step detection robust against the
+dynamics of smartphones,'' \emph{Sensors}, vol.~15, no.~10,
+pp.~27230--27250, 2015, doi: 10.3390/s151027230.
+
+\bibitem{brajdic2013}
+A.~Brajdic and R.~Harle, ``Walk detection and step counting on
+unconstrained smartphones,'' in \emph{Proc. ACM Int. Joint Conf.
+Pervasive Ubiquitous Comput. (UbiComp)}, Zurich, Switzerland, 2013,
+pp.~225--234, doi: 10.1145/2493432.2493449.
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,9 @@
+C:/Users/Inesh/Documents/University/2026/704/Part2/COMSYS704/Projects/STM32L476JG-SensorTile/Applications/ALLMEMS1/Src/step_detector.c:76:13:sd_endWalk	0	static
+C:/Users/Inesh/Documents/University/2026/704/Part2/COMSYS704/Projects/STM32L476JG-SensorTile/Applications/ALLMEMS1/Src/step_detector.c:89:16:sd_validateStep	8	static
+C:/Users/Inesh/Documents/University/2026/704/Part2/COMSYS704/Projects/STM32L476JG-SensorTile/Applications/ALLMEMS1/Src/step_detector.c:149:6:StepDetector_Reset	8	static
+C:/Users/Inesh/Documents/University/2026/704/Part2/COMSYS704/Projects/STM32L476JG-SensorTile/Applications/ALLMEMS1/Src/step_detector.c:144:6:StepDetector_Init	8	static
+C:/Users/Inesh/Documents/University/2026/704/Part2/COMSYS704/Projects/STM32L476JG-SensorTile/Applications/ALLMEMS1/Src/step_detector.c:176:9:StepDetector_Update	40	static
+C:/Users/Inesh/Documents/University/2026/704/Part2/COMSYS704/Projects/STM32L476JG-SensorTile/Applications/ALLMEMS1/Src/step_detector.c:271:10:StepDetector_GetSteps	0	static
+C:/Users/Inesh/Documents/University/2026/704/Part2/COMSYS704/Projects/STM32L476JG-SensorTile/Applications/ALLMEMS1/Src/step_detector.c:276:10:StepDetector_GetDistanceCm	0	static
+C:/Users/Inesh/Documents/University/2026/704/Part2/COMSYS704/Projects/STM32L476JG-SensorTile/Applications/ALLMEMS1/Src/step_detector.c:281:7:StepDetector_GetLastStepLengthM	0	static
+C:/Users/Inesh/Documents/University/2026/704/Part2/COMSYS704/Projects/STM32L476JG-SensorTile/Applications/ALLMEMS1/Src/step_detector.c:286:6:StepDetector_GetDebug	4	static
