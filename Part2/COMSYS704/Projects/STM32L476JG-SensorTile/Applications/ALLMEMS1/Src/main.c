@@ -38,11 +38,13 @@
 #include <limits.h>
 #include "main.h"
 #include "step_detector.h"
+#include "heading.h"
 
 /* #CS704 debug output switches (1 = on). Printing is blocking (~2 ms per line), keep it light at 50 Hz */
 #define PRINT_RAW_SENSORS   0   /* print ACC/MAG every sample                     */
 #define PRINT_STEP_DEBUG    0   /* print step-detector internals every 5th sample */
 #define PRINT_STEPS         1   /* print a line whenever a step is counted        */
+#define PRINT_HEADING_DEBUG 0   /* print heading internals every 25th sample      */
 
 #include "ble_interface.h"
 #include "bluenrg_utils.h"
@@ -291,6 +293,7 @@ int main(void)
   startMag();
   startAcc();
   StepDetector_Init();   // #CS704 step detector (see step_detector.c)
+  Heading_Init();        // #CS704 compass heading (see heading.c) - rotate the board in a figure-8 after power-up
 
   uint8_t BufferToWrite[10] = "ABCDE";
   //***************************************************
@@ -344,7 +347,8 @@ int main(void)
 
     	COMP_Value.Steps    = StepDetector_GetSteps();
     	COMP_Value.Distance = StepDetector_GetDistanceCm();   // cm (app shows this /10)
-    	COMP_Value.Heading  = 0;                              // TODO: replace with heading estimate (degrees)
+    	COMP_Value.Heading  = (uint32_t)(Heading_Update(ACC_Value.x, ACC_Value.y, ACC_Value.z,
+    	                                               MAG_Value.x, MAG_Value.y, MAG_Value.z) + 0.5f) % 360U;  // degrees
 
 #if PRINT_STEPS
     	if (newSteps) {
@@ -363,6 +367,17 @@ int main(void)
     		XPRINTF("SD,%lu,%d,%d,%d,%d,%d,%lu\r\n", (unsigned long)HAL_GetTick(), (int)dbg.mag,
     		        (int)dbg.filt, (int)dbg.mean, (int)dbg.sigma, (int)dbg.moving,
     		        (unsigned long)COMP_Value.Steps);
+    	}
+#endif
+#if PRINT_HEADING_DEBUG
+    	// HD,heading,|m|,radius,dip,calibrated,rejected  - dip should be ~-63 when still in Auckland
+    	static uint8_t hdDiv = 0;
+    	if (++hdDiv >= 25) {
+    		HeadingDebug hdbg;
+    		hdDiv = 0;
+    		Heading_GetDebug(&hdbg);
+    		XPRINTF("HD,%lu,%d,%d,%d,%d,%d\r\n", (unsigned long)COMP_Value.Heading, (int)hdbg.magNorm,
+    		        (int)hdbg.radius, (int)hdbg.dip, (int)hdbg.calibrated, (int)hdbg.rejected);
     	}
 #endif
 
