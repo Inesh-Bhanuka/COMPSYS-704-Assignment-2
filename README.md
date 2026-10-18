@@ -60,7 +60,8 @@ locked. With the laptop attached, the same events print over UART as `HD,<event>
    power-up also starts a fresh calibration. The gyro bias is learnt whenever the board is still.
 2. **Set forward.** Face the way you will walk. Hold the board flat and face up, with +X pointing
    straight ahead, still for 2 s, until the LED flashes ("forward set"). This also freezes the
-   calibration, so a phone in the same pocket can't stretch it.
+   calibration, so a phone in the same pocket can't stretch it, and zeroes the step count, so
+   the steps counted while you tumbled the board are dropped.
 3. **Put it away** (pocket, belt, any way round) without turning your body, and stand still for
    a moment. The gyro carries "forward" into the board's new position and locks it once the
    board settles (LED: "forward locked"; after 8 s at the latest).

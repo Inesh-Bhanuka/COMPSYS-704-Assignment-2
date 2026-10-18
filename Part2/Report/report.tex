@@ -1,15 +1,16 @@
 % CS704 Project 2 -- Deliverable 5: Group report (max 4 pages, due 19 Oct 5pm)
 % Compile with pdflatex (Overleaf: works as-is). Submit as project2_group03.pdf.
 %
-% Everything in red (\tbd{...}) is a placeholder for OUR measured data or details.
-% Fill them from real trials before submitting -- see the protocol in Section V.
-% Remove the xcolor/\tbd lines once nothing red is left.
+% The only red (\tbd{...}) placeholder left is the author list. Remove the xcolor/\tbd lines
+% once it is filled.
 \documentclass[conference,a4paper]{IEEEtran}
 \usepackage{amsmath}
 \usepackage{booktabs}
 \usepackage{graphicx}
 \usepackage{cite}
 \usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
 \usepackage[hidelinks]{hyperref}
 \newcommand{\tbd}[1]{\textcolor{red}{[#1]}}
 
@@ -24,53 +25,127 @@
 
 \begin{abstract}
 We present a body-worn tracker for factory workers built on the STMicroelectronics
-SensorTile. Using only the LSM303AGR accelerometer and magnetometer, the firmware counts
-steps, estimates walked distance and reports compass heading in real time, streaming the
-results to a phone over Bluetooth Low Energy. Steps are found by adaptive peak and valley
-detection on the acceleration magnitude, gated by signal variance. Heading comes from a
-tilt-compensated, self-calibrating magnetometer that rejects magnetically disturbed samples.
-\tbd{One sentence with the headline step and heading accuracy from Section V.}
+SensorTile. The firmware counts steps, estimates walked distance and reports heading in real
+time, and streams the results to a phone over Bluetooth Low Energy. Steps are found by
+adaptive peak and valley detection on the acceleration magnitude, gated by signal variance.
+Heading comes from a tilt-compensated, self-calibrating magnetometer blended with the
+on-board gyroscope, so turns are tracked through magnetic disturbances that are common near
+steel. The direction of travel is either learnt from the accelerometer while walking or set
+with a hand gesture, so the board can be worn in any orientation, including a trouser
+pocket. On a 44-step route walked with the board in a pocket, every step was counted. On a
+repeat of the route, the two long legs were within 3 degrees of a phone compass and the mean
+heading error over all legs was 7 degrees.
 \end{abstract}
 
 \begin{IEEEkeywords}
-pedestrian dead reckoning, step detection, electronic compass, MEMS, SensorTile
+pedestrian dead reckoning, step detection, electronic compass, sensor fusion, MEMS
 \end{IEEEkeywords}
 
 \section{Introduction}
 AICorp wants to monitor employee movement inside a factory, where GPS is unavailable and
 installing infrastructure is costly. Step-based pedestrian dead reckoning (PDR) needs only a
 body-worn inertial unit: each detected step advances the position by a step length $L_k$ in
-heading $\psi_k$~\cite{jin2011,tian2016}. The device must therefore produce two quantities
-reliably, a step count and an orientation, on a microcontroller with no gyroscope in use.
+heading $\psi_k$~\cite{jin2011,tian2016}. The device must therefore produce a step count and
+an orientation, reliably and in real time.
+
 Our literature review found that adaptive thresholds on the orientation-invariant
-magnitude $|\mathbf{a}|$ are robust without placement classification~\cite{lee2015}, that a
-variance-based walk gate suppresses false steps~\cite{brajdic2013}, and that magnetometer
-heading must be tilt-compensated and protected from magnetic disturbance, which is common
-near steel~\cite{jin2011,yuan2015,kuang2018}. The system below follows those findings.
+magnitude $|\mathbf{a}|$ work without knowing how the device is carried~\cite{lee2015}, and
+that a variance-based walk gate suppresses false steps~\cite{brajdic2013}. A magnetometer
+heading must be tilt-compensated and protected from magnetic disturbance, usually by fusing
+a gyroscope~\cite{jin2011,yuan2015,kuang2018}, and the offset between the device and the
+walking direction must be estimated~\cite{tian2016}.
+
+The brief specifies an accelerometer and magnetometer. In our first tests, in a laboratory
+lined with steel benches, a compass-only heading froze for minutes at a time, so we also
+used the LSM6DSM gyroscope already fitted to the SensorTile. Our contributions are a step
+detector that needs no knowledge of placement; a gyro-aided, tilt-compensated compass with
+automatic calibration and disturbance rejection; two ways of finding the direction of travel
+in the board's axes, one learnt from the gait and one set by a gesture; and a
+record-and-replay workflow that runs logged sensor data through the unmodified firmware
+algorithms on a PC, which produced every result in Section~\ref{sec:perf}.
 
 \section{System Overview}
 \subsection{Hardware and Sensor Configuration}
-The SensorTile (STM32L476JG, Cortex-M4F) is worn at the waist and programmed through an
-STLINK-V3. The LSM303AGR is accessed over 3-wire SPI with its I\textsuperscript{2}C
-interface disabled. The accelerometer runs in 12-bit high-resolution mode at 50\,Hz with a
-$\pm4$\,g range, which leaves headroom for heel strikes while giving 1.95\,mg/LSB. Block data
-update stops a read from mixing old and new bytes. The magnetometer runs continuously at
-100\,Hz with temperature compensation, at 1.5\,mG/LSB~\cite{an4825}.
+The SensorTile (STM32L476JG, Cortex-M4F at 80\,MHz) is programmed through an STLINK-V3. Both
+sensors share one 3-wire SPI bus with their I\textsuperscript{2}C interfaces disabled. The
+LSM303AGR accelerometer runs in 12-bit high-resolution mode at 50\,Hz with a $\pm4$\,g range,
+which leaves headroom for heel strikes at 1.95\,mg/LSB. Its magnetometer runs continuously at
+100\,Hz with temperature compensation, at 1.5\,mG/LSB~\cite{an4825}. The LSM6DSM gyroscope
+runs at 52\,Hz with a $\pm500$\,dps range (17.5\,mdps/LSB); its accelerometer is left off.
+Block data update is enabled on all three, so a read never mixes two samples.
+
+The sensors do not share axes. A clockwise turn on a desk decreased our first heading, which
+showed that the LSM303AGR's axes form a left-handed set on this board (ST's own SensorTile
+configuration lists the magnetometer as south-west-up). We negate the $y$ axis of both its
+sensors. The LSM6DSM is rotated by $90^\circ$ and maps as $(x,y,z)=(g_y,-g_x,g_z)$, found by
+ranking all 48 axis permutations by how well the gyro explains the rotation of the measured
+field, $\dot{\mathbf{m}}=-\boldsymbol{\omega}\times\mathbf{m}$. Such checks cannot detect a
+mirror image, so the desk test is needed as well.
 
 \subsection{Software Structure}
-Timer TIM4 raises a flag every 20\,ms. The main loop then reads both sensors, converts them
-to mg and mG, and calls two independent modules:
-\texttt{StepDetector\_Update()} (step count, distance) and \texttt{Heading\_Update()}
-(heading). Each module keeps its state in one private structure, has its tuning constants
-in its header, and exposes a debug structure. Compile-time switches print these as CSV over
-UART for offline tuning. Results go out in the existing BLE motion characteristic: the
-accelerometer and magnetometer slots carry the raw data, and the gyroscope slots carry
-steps, heading (degrees) and distance, so the provided ST BLE Sensor app plots all three.
+Timer TIM4 raises a flag every 20\,ms. The main loop then reads the three sensors, converts
+them to mg, mG and mdps in a common frame, and calls two independent modules
+(Fig.~\ref{fig:arch}): \texttt{StepDetector\_Update()} and \texttt{Heading\_Update()}. Each
+keeps its state in one private structure, has its tuning constants in its header, and
+exposes a debug structure. Results go out in the existing BLE motion characteristic: the
+accelerometer and magnetometer slots carry raw data, and the gyroscope slots carry steps,
+heading and distance, so the provided ST BLE Sensor app plots all three. Heading events
+(calibrated, forward set, forward locked) light the LED for 0.5\,s, and forward set also
+zeroes the step count.
+
+A compile-time switch prints every raw sample over UART at 115200 baud. A host program,
+\texttt{replay.c}, feeds such a log through the same \texttt{step\_detector.c} and
+\texttt{heading.c} that run on the board, and a Python script plots every internal
+variable, so a tuning change can be tested on the same walk without reflashing or walking
+again.
+
+\begin{figure*}[!t]
+\centering
+\begin{tikzpicture}[font=\footnotesize, >=Stealth, node distance=3.5mm and 4.5mm,
+  blk/.style={draw, rounded corners=2pt, align=center, minimum height=9mm, inner sep=2pt,
+              text width=#1},
+  blk/.default=25mm,
+  io/.style={blk=19mm, fill=black!7},
+  res/.style={blk=19mm, fill=black!7, rounded corners=6pt}]
+% step-detection path
+\node[io] (acc) {Accelerometer\\LSM303AGR};
+\node[blk, right=of acc] (s1) {$|\mathbf{a}|$, 5-tap\\moving average};
+\node[blk, right=of s1] (s2) {EMA $\mu,\sigma$;\\thresholds $T_\pm$};
+\node[blk, right=of s2] (s3) {Peak--valley\\state machine};
+\node[blk, right=of s3] (s4) {Variance gate,\\swing, timing,\\2-step confirm};
+\node[res, right=of s4] (o1) {Steps,\\distance};
+\draw[->] (acc) -- (s1); \draw[->] (s1) -- (s2); \draw[->] (s2) -- (s3);
+\draw[->] (s3) -- (s4); \draw[->] (s4) -- (o1);
+% heading path
+\node[io, below=10mm of acc] (gyr) {Gyroscope\\LSM6DSM};
+\node[io, below=of gyr] (mag) {Magnetometer\\LSM303AGR};
+\node[blk, right=of gyr] (h1) {Bias removal\\(learnt when still)};
+\node[blk, right=of h1] (h2) {Gravity, down $\mathbf{D}$\\(gyro $+$ acc)};
+\node[blk, right=of h2] (fw) {Forward $\mathbf{f}$: fixed,\\gait or gesture};
+\node[blk, right=of mag] (h3) {Hard/soft-iron\\calibration};
+\node[blk, right=of h3] (h4) {$|\mathbf{m}|$ gate;\\$\mathbf{E},\mathbf{N}$ from $\mathbf{D},\mathbf{m}$};
+\node[blk, right=of h4] (h5) {Mag heading $\psi_m$\\$\operatorname{atan2}(\mathbf{f}{\cdot}\mathbf{E},\mathbf{f}{\cdot}\mathbf{N})$};
+\node[blk, right=of h5] (fu) {Complementary\\filter, $\tau=10$\,s};
+\node[res, right=of fu] (o2) {Heading $\psi$};
+\draw[->] (gyr) -- (h1); \draw[->] (h1) -- (h2); \draw[->] (h2) -- (fw);
+\draw[->] (mag) -- (h3); \draw[->] (h3) -- (h4); \draw[->] (h4) -- (h5);
+\draw[->] (h5) -- (fu); \draw[->] (fu) -- (o2);
+\draw[->] (h2) -- (h4); \draw[->] (fw) -- (h5);
+\draw[<-] ([xshift=-6mm]h2.north) -- ++(0,4mm) node[above, inner sep=1pt] {$\mathbf{a}$};
+\draw[<-] (fw.east) -- ++(4mm,0) node[right, inner sep=1pt] {$\mathbf{a}$};
+\draw[->] ([xshift=6mm]h2.north) -- ++(0,2mm) -| node[pos=0.25, above, inner sep=1pt]
+  {yaw rate $\boldsymbol{\omega}\cdot\mathbf{D}$} (fu.north);
+\end{tikzpicture}
+\caption{Firmware signal flow, run once per 20\,ms sample. Top: step detector. Bottom:
+heading estimator; the accelerometer $\mathbf{a}$ also feeds the gravity estimate and the
+walking-direction learner. Steps, heading and distance are sent over BLE.}
+\label{fig:arch}
+\end{figure*}
 
 \section{Step Detection}
-A waist-worn sensor sees one rise of $|\mathbf{a}|$ above 1\,g at heel strike and push-off,
-then one dip below 1\,g as the body falls into the next step. The detector counts one step
-per peak--valley cycle. All operations are $O(1)$ per sample.
+A sensor on the trunk or thigh sees one rise of $|\mathbf{a}|$ above 1\,g at heel strike and
+push-off, then one dip below 1\,g as the body falls into the next step. The detector counts
+one step per peak--valley cycle, with $O(1)$ work per sample.
 
 \subsubsection{Pre-processing}
 We use the magnitude $|\mathbf{a}|=\sqrt{a_x^2+a_y^2+a_z^2}$, which does not depend on how
@@ -103,152 +178,257 @@ following Brajdic and Harle's walk detector~\cite{brajdic2013};
 $\max(250\,\text{ms},\,0.5\,\bar T)$, where $\bar T$ is an adaptive average of recent step
 intervals ($\bar T\leftarrow\bar T+0.2(\Delta t-\bar T)$). This rejects double peaks within
 one step.
-A walk starts only after two consecutive valid steps, which are then credited together. An
-isolated knock or sitting down is therefore never counted. A gap of more than 2\,s ends the
-walk.
+A walk starts only after two consecutive valid steps, which are then credited together, so
+an isolated knock or sitting down is never counted. A gap of more than 2\,s ends the walk.
+Every rejected cycle is labelled with its reason (\emph{still}, \emph{small}, \emph{fast} or
+\emph{timeout}), which showed which constant to change while tuning.
 
 \subsubsection{Step length}
 Each step's length uses the Weinberg model~\cite{weinberg2002},
 $L=K\sqrt[4]{a_{\max}-a_{\min}}$, with the swing in m/s\textsuperscript{2} and $K=0.45$.
-\tbd{State K after calibrating over a measured distance.}
 
 \section{Heading Estimation}
-Only the accelerometer and magnetometer are used, so heading is an electronic compass.
-Three problems must be handled: board tilt, distortion from the board's own components,
-and external magnetic disturbance.
+The heading is the direction of travel in degrees clockwise from magnetic north. Board tilt,
+the board's own magnetic distortion, external disturbances, gyroscope drift, and the unknown
+orientation of the board on the body all have to be handled.
 
 \subsubsection{Gravity estimate}
-The accelerometer is low-pass filtered ($\alpha=0.02$, about 1\,s) to give
-$\bar{\mathbf{g}}$. This keeps walking accelerations from tilting the reference frame.
+With $\boldsymbol{\omega}_k$ the bias-corrected gyro rate, the gravity estimate is rotated
+with the board and then pulled towards the accelerometer:
+\begin{equation}
+\mathbf{g}_k=\mathbf{g}_{k-1}-(\boldsymbol{\omega}_k\times\mathbf{g}_{k-1})\,\Delta t,\qquad
+\mathbf{g}_k\leftarrow\mathbf{g}_k+\alpha_g(\mathbf{a}_k-\mathbf{g}_k),
+\end{equation}
+with $\alpha_g=0.02$ ($\approx$1\,s), and $\mathbf{D}=-\mathbf{g}/|\mathbf{g}|$. The low-pass
+keeps walking accelerations from tilting the frame. Without the gyro step, the estimate lagged
+behind a pocketed board swinging $\pm30^\circ$ with the thigh, and a replayed pocket walk
+measured a $180^\circ$ turn as $159^\circ$; with it, the same walk gave $175^\circ$.
 
 \subsubsection{Hard/soft-iron calibration}
-The board's battery and PCB add a constant offset (hard iron) and scale each axis
-differently (soft iron), so the field traces an offset ellipsoid instead of a sphere
-centred on zero. After power-up the user turns the board in a figure-8 while the firmware
-tracks each axis's extremes. The offset is $o_i=(\max_i+\min_i)/2$, the radius is
-$r_i=(\max_i-\min_i)/2$ and $R=\tfrac13\sum r_i$. The corrected field is
-$m_i=(m^{\text{raw}}_i-o_i)\,R/r_i$. Calibration takes effect once every axis has swung by
-at least 800\,mG; Auckland's field of about 550\,mG gives roughly 1100\,mG over a full turn.
+The battery and PCB add a constant offset (hard iron, 350\,mG on $z$ on our board) and scale
+each axis differently (soft iron). After power-up the wearer points each face of the board
+up in turn while the firmware tracks each axis's extremes. The offset is
+$o_i=(\max_i+\min_i)/2$, the radius $r_i=(\max_i-\min_i)/2$, $R=\tfrac13\sum r_i$, and the
+corrected field $m_i=(m^{\text{raw}}_i-o_i)\,R/r_i$. Calibration takes effect once every axis
+has swung by at least 800\,mG (Auckland's 550\,mG field gives about 1100\,mG). Because one
+stray magnet stretches the bounds, the calibration is frozen when the forward direction is
+set, and holding the board face down for 3\,s restarts it.
 
-\subsubsection{Disturbance rejection}
-After calibration, a clean field has magnitude $\approx R$. If $\big||\mathbf{m}|-R\big|>0.2R$,
-for example next to steel shelving or motors, the sample is rejected and the last good
-heading is held, as with the quasi-static field detection of~\cite{kuang2018}.
-
-\subsubsection{Tilt-compensated heading}
+\subsubsection{Tilt-compensated magnetic heading}
 Rather than computing roll and pitch angles, we build the North--East--Down frame directly
-in sensor coordinates. With $\mathbf{D}=-\bar{\mathbf{g}}/|\bar{\mathbf{g}}|$ (the
-accelerometer reads $+1$\,g upwards):
+in sensor coordinates:
 \begin{equation}
 \mathbf{E}=\mathbf{D}\times\mathbf{m},\qquad \mathbf{N}=\mathbf{E}\times\mathbf{D},\qquad
-\psi=\operatorname{atan2}(\mathbf{f}\cdot\mathbf{E},\;\mathbf{f}\cdot\mathbf{N}),
+\psi_m=\operatorname{atan2}(\mathbf{f}\cdot\mathbf{E},\;\mathbf{f}\cdot\mathbf{N}),
 \end{equation}
-where $\mathbf{f}$ is the board axis that points in the walking direction. This works
-because the Earth's field lies in the North--Down plane, so $\mathbf{D}\times\mathbf{m}$
-always points East. The result is valid at any tilt, avoids Euler-angle singularities, and
-needs one square root and one $\operatorname{atan2}$ per sample.
+where $\mathbf{f}$ is the horizontal unit vector, in board axes, that points in the walking
+direction. The Earth's field lies in the North--Down plane, so $\mathbf{D}\times\mathbf{m}$
+always points East. This is valid at any tilt, has no Euler-angle singularities, and costs
+one square root and one $\operatorname{atan2}$ per sample.
 
-\subsubsection{Smoothing}
-Waist sway makes $\psi$ oscillate at the step frequency. We smooth $(\cos\psi,\sin\psi)$ with
-an EMA ($\alpha=0.05$, about 0.4\,s) and take the angle of the result. Averaging angles
-directly would turn $359^\circ$ and $1^\circ$ into $180^\circ$; averaging on the unit circle
-avoids this. The output is $[0,360)^\circ$ clockwise from magnetic north.
+\subsubsection{Gyro integration and bias}
+A rotation about $\mathbf{D}$ is a clockwise turn seen from above, so the gyro advances the
+heading by $(\boldsymbol{\omega}_k\cdot\mathbf{D}_k)\,\Delta t$ at any tilt. Our LSM6DSM's
+zero-rate offset of about 3\,dps would drift the heading by $180^\circ$ per minute, so it is
+learnt while the board is still: when the accelerometer and gyro are within 30\,mg and
+2\,dps of their recent averages and the gyro reads below 15\,dps, the bias is low-pass
+filtered towards the raw reading. The 15\,dps cap stops a slow turn being learnt as bias.
 
-\section{Performance Analysis}
-\subsection{Heading Validation in Simulation}
-A host-side test (\texttt{test/test\_heading.c}) runs the heading code on synthetic data. It
-uses a field approximating Auckland's (250\,mG north, 490\,mG up, dip $-63^\circ$), distorted
-by a hard-iron offset of $(120,-80,200)$\,mG and soft-iron scales of $(1.15,0.9,1.0)$. After
-a simulated figure-8, six poses with yaw $0$--$359^\circ$, pitch up to $\pm30^\circ$ and roll up
-to $25^\circ$ gave a maximum heading error of $0.09^\circ$. The dip was recovered as
-$-63.0\pm0.1^\circ$. When the field was scaled by 1.5 to mimic nearby steel, every sample was
-rejected and the heading held. This confirms the maths and calibration. It does not cover
-real sensor noise, sway or field distortion, which the trials below measure.
+\subsubsection{Fusion and disturbance rejection}
+The heading is a complementary filter:
+\begin{equation}
+\psi_k=\psi_{k-1}+(\boldsymbol{\omega}_k\cdot\mathbf{D}_k)\Delta t
+      +\tfrac{\Delta t}{\tau}\,\mathrm{wrap}\!\left(\psi_{m,k}-\psi_{k-1}\right),
+\end{equation}
+where $\mathrm{wrap}$ maps an angle into $(-180^\circ,180^\circ]$ and $\tau=10$\,s. The gyro
+follows turns immediately, and the magnetometer removes its drift. On replayed lab walks,
+$\tau=10$\,s halved the step-to-step wobble compared with $\tau=2$\,s. A clean field has
+magnitude $\approx R$; if $\big||\mathbf{m}|-R\big|>0.2R$, for example next to steel benches
+or motors, the magnetic term is dropped and the gyro carries the heading alone, as with the
+quasi-static field detection of~\cite{kuang2018}. The heading is set to $\psi_m$ directly
+when calibration completes and when the forward direction is set.
 
-\subsection{Experimental Protocol}
-\tbd{Describe what was actually done. Suggested: device at the waist with the board's +X
-axis forward; three repetitions per scenario; true steps counted by an observer with a
-tally counter; reference bearings from a phone compass, or from the building plan for
-true-north bearings; distances measured with a tape. Logs were captured with
-\texttt{PRINT\_STEP\_DEBUG} / \texttt{PRINT\_HEADING\_DEBUG} over UART at 115200 baud.}
+\subsubsection{Direction of travel}
+$\mathbf{f}$ is chosen in one of three ways. By default it is the board's $+X$ axis. While
+the wearer walks, it is learnt from the gait: the trunk rocks forwards and backwards with
+each step more than it sways sideways, so the main axis of the horizontal acceleration is
+the walking line. The firmware removes gravity and a 0.2\,s mean from the acceleration,
+splits the result into a vertical part $u$ and a horizontal part $\mathbf{h}$, and tracks
+$\mathbf{C}\leftarrow\mathbf{C}+\alpha_w(\mathbf{h}\mathbf{h}^{\mathsf T}-\mathbf{C})$ with
+$\alpha_w=0.01$. One power-iteration step per sample,
+$\mathbf{v}\leftarrow\mathbf{C}\mathbf{v}/|\mathbf{C}\mathbf{v}|$, follows its principal axis.
+Which end of $\mathbf{v}$ is forward comes from the timing of the swing against the bounce:
+with $s=\mathbf{h}\cdot\mathbf{v}$, our waist and hand recordings showed that the low-passed
+product $u(t-80\,\text{ms})\,\big(s(t)-s(t-240\,\text{ms})\big)$ is positive when
+$\mathbf{v}$ points forward. This resembles the offset compensation of~\cite{tian2016}; unlike
+the PCA that Jin et~al.\ found unreliable below 25\,Hz~\cite{jin2011}, it runs at 50\,Hz with
+a gyro-stabilised vertical. Learning runs only while the horizontal RMS is 40--350\,mg and the
+gyro RMS is below 80\,dps (walking measured 11--74\,dps, handling 110--150\,dps), and its
+result replaces the default after 3\,s of continuous walking.
+
+A trouser pocket follows the thigh, not the trunk, so there the wearer instead holds the
+board flat, face up, with $+X$ ahead for 2\,s. The firmware captures $\mathbf{f}=+X$ and
+rotates it against the board's own rotation,
+$\mathbf{f}\leftarrow\mathbf{f}-(\boldsymbol{\omega}\times\mathbf{f})\Delta t$, while the board
+is put away, so that it stays fixed in the world. It locks $\mathbf{f}$ to the board once the
+board has moved and settled (gyro RMS above 80\,dps, then below 30\,dps, or after 8\,s).
+Whenever $\mathbf{f}$ changes within the board, the heading is rotated by
+$\operatorname{atan2}((\mathbf{f}_{\text{old}}\times\mathbf{f})\cdot\mathbf{D},\,
+\mathbf{f}_{\text{old}}\cdot\mathbf{f})$, so it never jumps.
+
+\section{Performance Analysis}\label{sec:perf}
+\subsection{Validation in Simulation}
+A host-side test (\texttt{test/test\_heading.c}) runs \texttt{heading.c} on synthetic data
+in a field approximating Auckland's (250\,mG north, 490\,mG up), distorted by a hard-iron
+offset of $(120,-80,200)$\,mG and soft-iron scales of $(1.15,0.9,1.0)$, after a simulated
+tumble. Every case in Table~\ref{tab:sim} passes. This confirms the geometry, calibration,
+gyro path and gestures, but not noise, sway or real field distortion.
 
 \begin{table}[!t]
 \centering
-\caption{Step count accuracy (mean of \tbd{3} trials)}
+\caption{Heading module on simulated data}
+\label{tab:sim}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+Case & Expected & Result \\
+\midrule
+6 poses, yaw 0--359$^\circ$, tilt to 30$^\circ$ & -- & max error 0.8$^\circ$ \\
+Dip angle in those poses & $-63.0^\circ$ & $-62.94$ to $-63.00^\circ$ \\
+Field 40\% weak (steel) & rejected & rejected, held \\
+90$^\circ$ turn, compass rejected & 90$^\circ$ & 89.9$^\circ$ \\
+Gyro bias of $-4$\,dps & $-4.00$ & $-4.00$\,dps \\
+Gait-learnt, upright, both ways & 90$^\circ$ & 88.9$^\circ$, 89.1$^\circ$ \\
+Gesture: set, stow, turn right & 90, 90, 180$^\circ$ & 90.2, 90.1, 179.9$^\circ$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Experimental Protocol}
+All trials used one subject in the university's engineering building. Each was recorded over
+UART with the board tethered to a laptop and then replayed through the final firmware code;
+logs taken before the axis correction of Section~II-A were converted to the corrected frame
+first. Before the heading trials the wearer did the routine of Section~IV: face down,
+tumble, set forward, put the board away. The reference direction came from a phone compass
+set to magnetic north, held away from the board. In separate runs the board started flat
+with a known axis forward and was then placed at the waist or held in the hand; integrating
+the gyro over those few seconds gave a compass-free reference for the forward axis. Most
+tests were done on level~7, where steel benches distort the field: its strength varied from
+413 to 894\,mG along one walk.
+
+\subsection{Step Counting}
+Table~\ref{tab:steps} lists the step counts. Walking with the board in a trouser pocket,
+the detector was exact or within 4\%, with no change needed for the placement because
+$|\mathbf{a}|$ ignores orientation. No step was counted in any stationary period we
+recorded, including standing at turn-arounds. In one 4-minute session the detector rejected
+27 cycles: 14 \emph{timeout}, 8 \emph{small}, 3 \emph{still} and 2 \emph{fast}. The main
+weakness is handling: tumbling the board for calibration produced 29 false steps, and the
+full routine before a walk about 14, because shaking the board looks like walking to an
+accelerometer-only detector. The final firmware therefore zeroes the count at the
+forward-set gesture, which ends the routine. The median swing of counted steps was 381\,mg, for which the
+Weinberg model gives 0.63\,m, a plausible adult step. We did not walk a measured course, so
+distance has not been validated and $K$ was not calibrated for the wearer.
+
+\begin{table}[!t]
+\centering
+\caption{Step count accuracy (board in a trouser pocket)}
 \label{tab:steps}
 \begin{tabular}{@{}lrrr@{}}
 \toprule
-Scenario & True & Counted & Error \\
+Trial & Walked & Counted & Error \\
 \midrule
-Normal walk, straight & \tbd{} & \tbd{} & \tbd{}\% \\
-Slow walk & \tbd{} & \tbd{} & \tbd{}\% \\
-Fast walk & \tbd{} & \tbd{} & \tbd{}\% \\
-Walk with 90$^\circ$ turns & \tbd{} & \tbd{} & \tbd{}\% \\
-Stairs & \tbd{} & \tbd{} & \tbd{}\% \\
-Standing 60\,s / sit--stand & 0 & \tbd{} & -- \\
+Reference route, run 1 (15/7/7/15) & 44 & 44 & 0\% \\
+Lower-floor route, 2 straight legs & $\approx$29 & 29 & -- \\
+Square route with U-turn & $\approx$71 & 74 & +4\% \\
+Stationary periods (all trials) & 0 & 0 & -- \\
+Calibration tumble in the hand & 0 & 29 & -- \\
+Setup routine before a walk & 0 & $\approx$14 & -- \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\subsection{Heading}
+Table~\ref{tab:heading} gives a second run of the reference route: steps ahead, a right
+turn, a turn-around and a left turn, with the board in a pocket. The wearer pointed the board's $-X$
+edge ahead during the gesture, so the captured forward was reversed; the table removes that
+constant $180^\circ$. Held flat at the gesture, the board read within $2.3^\circ$ of the
+phone. Both long legs were within $3.1^\circ$, even after three turns, so the error does not
+build up along the route. The 5--6-step legs were worse: they are mostly the turns into and
+out of them, and in a pocket the heading swings by $\pm10$--$15^\circ$ with each stride
+(per-step standard deviation 10--19$^\circ$). The three turns were measured $8^\circ$ short,
+$18^\circ$ short and $3^\circ$ long.
 
 \begin{table}[!t]
 \centering
-\caption{Heading accuracy, device at the waist}
+\caption{Heading on the reference route (pocket, reference 89$^\circ$ magnetic)}
 \label{tab:heading}
 \begin{tabular}{@{}lrrr@{}}
 \toprule
-Condition & Reference & Measured & Error \\
+Segment & Reference & Measured & Error \\
 \midrule
-Standing, N/E/S/W & 0/90/180/270$^\circ$ & \tbd{} & \tbd{}$^\circ$ \\
-Standing, tilted $\sim$20$^\circ$ & \tbd{} & \tbd{} & \tbd{}$^\circ$ \\
-Walking straight (mean) & \tbd{} & \tbd{} & \tbd{}$^\circ$ \\
-Near steel structure & \tbd{} & \tbd{} & \tbd{}$^\circ$ \\
+Held flat at the gesture & 89$^\circ$ & 91.3$^\circ$ & $+2.3^\circ$ \\
+In the pocket, standing & 89$^\circ$ & 94.6$^\circ$ & $+5.6^\circ$ \\
+Leg 1, 15 steps & 89$^\circ$ & 89.3$^\circ$ & $+0.3^\circ$ \\
+Leg 2, 5 steps (right turn) & 179$^\circ$ & 170.9$^\circ$ & $-8.1^\circ$ \\
+Leg 3, 6 steps (turn-around) & 359$^\circ$ & 341.1$^\circ$ & $-17.9^\circ$ \\
+Leg 4, 13 steps (left turn) & 269$^\circ$ & 272.1$^\circ$ & $+3.1^\circ$ \\
+\midrule
+Mean absolute error, legs & & & $7.4^\circ$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Results}
-Table~\ref{tab:steps} lists the step-count results. \tbd{Discuss them: the overall error,
-which scenario was worst and why (e.g.\ the first steps of slow walking fall below the
-variance gate, fast steps hit the minimum-interval limit, stairs change the peak shape), and
-whether any false steps occurred while stationary. Add a figure from the
-\texttt{PRINT\_STEP\_DEBUG} log showing $f_k$, $T_\pm$ and the detected steps over a short
-walk -- it shows the algorithm working better than any table.}
-Table~\ref{tab:heading} lists heading accuracy. \tbd{Discuss: static error after
-calibration, effect of tilt, sway amplitude while walking, and how the disturbance gate
-behaved near steel.} Over a \tbd{20}\,m walk the estimated distance was \tbd{}\,m
-(\tbd{}\% error) with $K=$\tbd{}.
+The gyro fusion mattered most near steel. Before it, the heading froze for about 2.5\,min
+while the board sat in a disturbed spot. With it, the compass was rejected along the far end
+of the reference route (field 1.6--1.9 times normal) and the gyro carried the heading. On a
+route on a lower floor the compass was rejected for 69\% of the walk, and the gyro alone
+measured a $90^\circ$ turn as $83^\circ$ and the turn-arounds as 170--175$^\circ$.
+
+Against the gyro-integrated reference, the gesture-carried forward was within $5^\circ$ at
+the waist and $9^\circ$ in the hand, and the gait-learnt forward within 3--11$^\circ$ and
+9--16$^\circ$; the two methods agreed to within $4.2^\circ$ and $2.3^\circ$. In a pocket the
+gait method did not converge, as expected, and the default axis was kept.
+
+Calibration quality was the largest practical source of error. Our first tumble gave
+$R=551$\,mG against Auckland's $\approx$550\,mG. Two later tumbles, done while holding the
+tethered laptop, stretched one axis to 1576\,mG, beyond the $\approx$1100\,mG the Earth's
+field can produce, and gave $R=616$--$628$\,mG. With $R$ 12\% too large, good samples fail
+the 20\% gate more often, which probably contributed to the 69\% rejection rate above.
 
 \subsection{Computational Cost}
-Both modules use only $O(1)$ work and $\approx$\tbd{} bytes of static RAM per sample at
-50\,Hz. The complete firmware is \tbd{text/data/bss from \texttt{arm-none-eabi-size} after the
-final build}. The processing time per sample is negligible compared with the 20\,ms period.
+Both modules do fixed work per sample. Built with GCC 14.2 (\texttt{-Og}), the step detector takes
+1.3\,kB of code and 128\,B of RAM, and the heading module 4.4\,kB and 328\,B. The complete
+firmware is 35.8\,kB of code and 15.1\,kB of RAM, 3.5\% of the flash and 12\% of the RAM of
+the STM32L476JG. Even with a UART line printed every sample ($\approx$4\,ms), the loop kept
+its 50\,Hz rate.
 
 \section{Limitations}
 \begin{itemize}
-\item \emph{No gyroscope fusion.} During a magnetic disturbance, heading is held, not
-tracked, so a turn made next to steel is missed until the field recovers. Fusing the
-SensorTile's LSM6DSM gyroscope, e.g.\ a complementary or Kalman
-filter~\cite{yuan2015,kuang2018}, would bridge these gaps and reduce sway.
-\item \emph{Calibration.} A figure-8 is needed after every power-up. The min/max method is
-simple, but one magnetic spike during calibration stretches the bounds until reset. An
-ellipsoid fit stored in flash would be more robust.
-\item \emph{Magnetic, not true, north.} No declination correction is applied (about
-$+20^\circ$ in Auckland). This is fine for relative tracking, but it must be added before
-comparing against a map.
-\item \emph{Fixed placement.} Thresholds were tuned for a waist-worn device. Pocket or
-handheld use changes the signal shape~\cite{tian2016,kuang2018}, and the forward axis is a
-compile-time constant.
-\item \emph{Step length.} $K$ is per user and the Weinberg model ignores step frequency, so
-distance error grows for walkers unlike the calibration subject~\cite{tian2016}.
-\item \emph{Latency.} The two-step confirmation delays the first count of each walk by one
-step, and heading smoothing adds about 0.4\,s lag on turns.
+\item \emph{Handling counts as steps.} Zeroing the count at the gesture drops the
+calibration tumble, but putting the board away can still add a few. The gyro RMS separates
+handling (110--150\,dps) from walking (11--74\,dps) and could gate the step detector.
+\item \emph{Calibration} is lost at every reset and is stretched by any magnet near the
+board during the tumble; freezing it only protects it afterwards. An ellipsoid fit stored in
+flash would be more robust.
+\item \emph{Disturbance gate.} Only $|\mathbf{m}|$ is checked. At one spot the magnitude was
+within 18\% of normal but the dip angle was $-19^\circ$, against $-54^\circ$ elsewhere in the
+room, so a distorted heading passed. A dip-angle check would reject it. In a long
+disturbance the gyro-only heading drifts slowly.
+\item \emph{Placement.} The gait-learnt direction works at the waist and in the hand but not
+in a pocket, where the gesture is needed, the heading sways $\pm10$--$15^\circ$ per stride,
+and the gesture must be repeated if the board shifts.
+\item \emph{Reference and scope.} Headings are magnetic; true north needs a declination of
+about $+20^\circ$ in Auckland. $K$ is per user and the Weinberg model ignores step
+frequency~\cite{tian2016}. One subject walked a few routes against a phone compass; stairs,
+running and other walkers were not tested.
 \end{itemize}
 
 \section{Conclusion}
-The firmware meets the brief: it counts steps and reports orientation in real time over BLE
-using only an accelerometer and magnetometer, in two small modules that can be tested
-independently. \tbd{Summarise the measured accuracy.} The main improvement would be gyroscope
-fusion, which addresses the dominant failure mode in a factory: heading loss near steel.
+The firmware meets the brief: it counts steps and reports orientation in real time over
+BLE, in two small modules that can be tested on a PC. In pocket trials the step count was
+exact or within 4\%, and the heading was within $3^\circ$ of a phone compass on long legs,
+with a mean error of $7.4^\circ$ over a route with three turns. Blending the gyroscope
+turned heading loss near steel into a slow drift, and learning or carrying the forward
+direction removed the need to mount the board one fixed way.
 
 \begin{thebibliography}{8}
 \bibitem{jin2011}

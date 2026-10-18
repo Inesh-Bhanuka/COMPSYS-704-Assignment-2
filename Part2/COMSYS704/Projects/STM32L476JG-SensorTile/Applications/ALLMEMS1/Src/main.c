@@ -34,6 +34,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include <stdio.h>
 #include <math.h>
+#include <string.h>
 
 #include <limits.h>
 #include "main.h"
@@ -394,6 +395,13 @@ int main(void)
     		XPRINTF("HD,%s\r\n", hev.event);
     		BSP_LED_On(LED1);
     		ledN = 25;
+    		// Forward set = setup done, the walk starts here: drop the steps counted while the
+    		// board was tumbled and handled for calibration
+    		if (strcmp(hev.event, "forward set") == 0) {
+    			StepDetector_Reset();
+    			COMP_Value.Steps    = 0;
+    			COMP_Value.Distance = 0;
+    		}
     	} else if (ledN && --ledN == 0) {
     		BSP_LED_Off(LED1);
     	}
