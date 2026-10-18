@@ -40,11 +40,11 @@
 #include "step_detector.h"
 #include "heading.h"
 
-/* #CS704 debug output switches (1 = on). Printing is blocking (~2 ms per line), keep it light at 50 Hz */
-#define PRINT_RAW_SENSORS   0   /* print ACC/MAG every sample                     */
-#define PRINT_STEP_DEBUG    0   /* print step-detector internals every 5th sample */
-#define PRINT_STEPS         1   /* print a line whenever a step is counted        */
-#define PRINT_HEADING_DEBUG 0   /* print heading internals every 25th sample      */
+/* #CS704 debug output switches (1 = on). Printing blocks (~4 ms per line at 115200), so at 50 Hz
+ * keep it to one line per sample. To tune, log PRINT_RAW_SENSORS and replay it on a PC (test/replay.c) */
+#define PRINT_RAW_SENSORS   1   /* R,t,ax,ay,az,mx,my,mz every sample, for test/replay.c        */
+#define PRINT_STEPS         1   /* one line per peak->valley cycle: counted, or why it was not  */
+#define PRINT_HEADING_DEBUG 0   /* heading internals twice a second (span grows during figure-8) */
 
 #include "ble_interface.h"
 #include "bluenrg_utils.h"
@@ -148,6 +148,7 @@ typedef struct  {
 BSP_MOTION_SENSOR_Axes_t ACC_Value;
 COMP_Data COMP_Value;
 BSP_MOTION_SENSOR_Axes_t MAG_Value;
+BSP_MOTION_SENSOR_Axes_t GYR_Value;   // #CS704 LSM6DSM gyro (mdps), in the LSM303AGR acc axes
 /* Private function prototypes -----------------------------------------------*/
 static void SystemClock_Config(void);
 
@@ -168,6 +169,8 @@ static int32_t BSP_LSM303AGR_WriteReg_Mag(uint16_t Reg, uint8_t *pdata, uint16_t
 static int32_t BSP_LSM303AGR_ReadReg_Mag(uint16_t Reg, uint8_t *pdata, uint16_t len);
 static int32_t BSP_LSM303AGR_WriteReg_Acc(uint16_t Reg, uint8_t *pdata, uint16_t len);
 static int32_t BSP_LSM303AGR_ReadReg_Acc(uint16_t Reg, uint8_t *pdata, uint16_t len);
+static int32_t BSP_LSM6DSM_WriteReg(uint16_t Reg, uint8_t *pdata, uint16_t len);
+static int32_t BSP_LSM6DSM_ReadReg(uint16_t Reg, uint8_t *pdata, uint16_t len);
 void LSM303AGR_SPI_Read_nBytes(SPI_HandleTypeDef* xSpiHandle, uint8_t *val, uint16_t nBytesToRead);
 void LSM303AGR_SPI_Read(SPI_HandleTypeDef* xSpiHandle, uint8_t *val);
 void LSM303AGR_SPI_Write(SPI_HandleTypeDef* xSpiHandle, uint8_t val);
@@ -220,12 +223,12 @@ static void readMag() {
 	int16_t y = (int16_t)((d[3] << 8) | d[2]);
 	int16_t z = (int16_t)((d[5] << 8) | d[4]);
 
+	// The LSM303AGR's axes form a left-handed set (ST's SensorTile config lists the mag as
+	// south-west-up), which mirrors the heading. Negating Y, here and in readAcc(), makes
+	// it right-handed. Check: turn the board clockwise on a desk and the heading goes up.
 	MAG_Value.x = (x * 3) / 2;   //  mGauss
-	MAG_Value.y = (y * 3) / 2;
+	MAG_Value.y = -(y * 3) / 2;
 	MAG_Value.z = (z * 3) / 2;
-#if PRINT_RAW_SENSORS
-	XPRINTF("MAG=%d,%d,%d\r\n", (int)MAG_Value.x, (int)MAG_Value.y, (int)MAG_Value.z);
-#endif
 }
 
 static void readAcc() {
@@ -237,11 +240,32 @@ static void readAcc() {
 
     // 12-bit left-justified data -> shift right 4, then scale by 1.95 mg/LSB (±4g high-res)
     ACC_Value.x = ((int16_t)((d[1] << 8) | d[0]) >> 4) * 195 / 100;
-    ACC_Value.y = ((int16_t)((d[3] << 8) | d[2]) >> 4) * 195 / 100;
+    ACC_Value.y = -(((int16_t)((d[3] << 8) | d[2]) >> 4) * 195 / 100);   // Y negated: see readMag()
     ACC_Value.z = ((int16_t)((d[5] << 8) | d[4]) >> 4) * 195 / 100;
-#if PRINT_RAW_SENSORS
-    XPRINTF("ACC=%d,%d,%d\r\n", (int)ACC_Value.x, (int)ACC_Value.y, (int)ACC_Value.z);
-#endif
+}
+
+static void startGyro() {
+	//#CS704 - LSM6DSM gyroscope, on the same SPI bus (its accelerometer stays off)
+	uint8_t d;
+	d = 0x4C;  // CTRL3_C (0x12): BDU=1, SIM=1 (3-wire SPI, keeps I2C off), IF_INC=1 (multi-byte reads)
+	BSP_LSM6DSM_WriteReg(0x12, &d, 1);
+	d = 0x34;  // CTRL2_G (0x11): ODR=52 Hz (matches 50 Hz read rate), FS=±500 dps (walking turns stay well under)
+	BSP_LSM6DSM_WriteReg(0x11, &d, 1);
+	BSP_LSM6DSM_ReadReg(0x0F, &d, 1);
+	XPRINTF("IAM Gyro= %d (expect 106)\r\n", d);
+}
+
+static void readGyro() {
+	uint8_t d[6];
+	BSP_LSM6DSM_ReadReg(0x22, d, 6);   // OUTX_L_G .. OUTZ_H_G
+	int16_t x = (int16_t)((d[1] << 8) | d[0]);
+	int16_t y = (int16_t)((d[3] << 8) | d[2]);
+	int16_t z = (int16_t)((d[5] << 8) | d[4]);
+	// 17.5 mdps/LSB at ±500 dps. The LSM6DSM sits rotated 90 deg from the (Y-negated) LSM303AGR:
+	// in its axes x = gy, y = -gx, z = gz (checked with test/plot_log.py's gyro axis check)
+	GYR_Value.x = y * 35 / 2;
+	GYR_Value.y = -x * 35 / 2;
+	GYR_Value.z = z * 35 / 2;
 }
 
 /**
@@ -292,6 +316,7 @@ int main(void)
 
   startMag();
   startAcc();
+  startGyro();
   StepDetector_Init();   // #CS704 step detector (see step_detector.c)
   Heading_Init();        // #CS704 compass heading (see heading.c) - rotate the board in a figure-8 after power-up
 
@@ -337,47 +362,61 @@ int main(void)
     	ReadSensor=0;
 
 	//*********get sensor data**********
+    	uint32_t now = HAL_GetTick();
     	readMag();
     	readAcc();
+    	readGyro();
+#if PRINT_RAW_SENSORS
+    	// Exactly what the algorithms see: capture to a file and replay it with test/replay.c
+    	XPRINTF("R,%lu,%d,%d,%d,%d,%d,%d,%d,%d,%d\r\n", (unsigned long)now,
+    	        (int)ACC_Value.x, (int)ACC_Value.y, (int)ACC_Value.z,
+    	        (int)MAG_Value.x, (int)MAG_Value.y, (int)MAG_Value.z,
+    	        (int)GYR_Value.x, (int)GYR_Value.y, (int)GYR_Value.z);
+#endif
 
 	//*********process sensor data*********
 
     	// Step detection on the accelerometer sample (mg) just read
-    	uint8_t newSteps = StepDetector_Update(ACC_Value.x, ACC_Value.y, ACC_Value.z, HAL_GetTick());
+    	StepDetector_Update(ACC_Value.x, ACC_Value.y, ACC_Value.z, now);
 
     	COMP_Value.Steps    = StepDetector_GetSteps();
     	COMP_Value.Distance = StepDetector_GetDistanceCm();   // cm (app shows this /10)
     	COMP_Value.Heading  = (uint32_t)(Heading_Update(ACC_Value.x, ACC_Value.y, ACC_Value.z,
-    	                                               MAG_Value.x, MAG_Value.y, MAG_Value.z) + 0.5f) % 360U;  // degrees
+    	                                               MAG_Value.x, MAG_Value.y, MAG_Value.z,
+    	                                               GYR_Value.x, GYR_Value.y, GYR_Value.z, now) + 0.5f) % 360U;  // degrees
+
+    	// Heading events ("calibrated", gestures: face down 3 s = "recal", face up 2 s =
+    	// "forward set"/"forward locked"): print and light the LED for 0.5 s
+    	static uint8_t ledN = 0;
+    	HeadingDebug hev;
+    	Heading_GetDebug(&hev);
+    	if (hev.event) {
+    		XPRINTF("HD,%s\r\n", hev.event);
+    		BSP_LED_On(LED1);
+    		ledN = 25;
+    	} else if (ledN && --ledN == 0) {
+    		BSP_LED_Off(LED1);
+    	}
 
 #if PRINT_STEPS
-    	if (newSteps) {
-    		XPRINTF("Steps = %lu\r\n", (unsigned long)COMP_Value.Steps);
-    	}
-#else
-    	(void)newSteps;
-#endif
-#if PRINT_STEP_DEBUG
-    	// CSV for tuning: SD,time_ms,|a|,filtered,mean,sigma,moving,steps  (plot in Excel/Python)
-    	static uint8_t dbgDiv = 0;
-    	if (++dbgDiv >= 5) {
-    		StepDetectorDebug dbg;
-    		dbgDiv = 0;
-    		StepDetector_GetDebug(&dbg);
-    		XPRINTF("SD,%lu,%d,%d,%d,%d,%d,%lu\r\n", (unsigned long)HAL_GetTick(), (int)dbg.mag,
-    		        (int)dbg.filt, (int)dbg.mean, (int)dbg.sigma, (int)dbg.moving,
-    		        (unsigned long)COMP_Value.Steps);
+    	// Every peak->valley cycle: "step"/"held" = counted, anything else = why it was rejected
+    	StepDetectorDebug sdbg;
+    	StepDetector_GetDebug(&sdbg);
+    	if (sdbg.event) {
+    		XPRINTF("SD,%s,steps=%lu,p2v=%d,dt=%lu\r\n", sdbg.event, (unsigned long)COMP_Value.Steps,
+    		        (int)sdbg.p2v, (unsigned long)sdbg.dt);
     	}
 #endif
 #if PRINT_HEADING_DEBUG
-    	// HD,heading,|m|,radius,dip,calibrated,rejected  - dip should be ~-63 when still in Auckland
+    	// Board still: dip ~ -63 in Auckland whatever the tilt, m ~ R. cal=0 until span reaches 800
     	static uint8_t hdDiv = 0;
     	if (++hdDiv >= 25) {
     		HeadingDebug hdbg;
     		hdDiv = 0;
     		Heading_GetDebug(&hdbg);
-    		XPRINTF("HD,%lu,%d,%d,%d,%d,%d\r\n", (unsigned long)COMP_Value.Heading, (int)hdbg.magNorm,
-    		        (int)hdbg.radius, (int)hdbg.dip, (int)hdbg.calibrated, (int)hdbg.rejected);
+    		XPRINTF("HD,hdg=%lu,m=%d,R=%d,dip=%d,span=%d,cal=%d,rej=%d\r\n", (unsigned long)COMP_Value.Heading,
+    		        (int)hdbg.magNorm, (int)hdbg.radius, (int)hdbg.dip, (int)hdbg.span,
+    		        (int)hdbg.calibrated, (int)hdbg.rejected);
     	}
 #endif
 
@@ -831,6 +870,72 @@ static int32_t BSP_LSM303AGR_ReadReg_Acc(uint16_t Reg, uint8_t *pdata, uint16_t 
 
   /* CS Disable */
   LSM_ACC_CS_HIGH();
+  SPI_1LINE_TX(&hbusspi2);
+  __HAL_SPI_ENABLE(&hbusspi2);
+  return ret;
+}
+
+/**
+ * @brief  Write register by SPI bus for LSM6DSM (#CS704 gyro)
+ * @param  Reg the starting register address to be written
+ * @param  pdata the pointer to the data to be written
+ * @param  len the length of the data to be written
+ * @retval BSP status
+ */
+static int32_t BSP_LSM6DSM_WriteReg(uint16_t Reg, uint8_t *pdata, uint16_t len)
+{
+  int32_t ret = BSP_ERROR_NONE;
+  uint8_t dataReg = (uint8_t)Reg;
+
+  /* CS Enable */
+  HAL_GPIO_WritePin(BSP_LSM6DSM_CS_PORT, BSP_LSM6DSM_CS_PIN, GPIO_PIN_RESET);
+
+  if (BSP_SPI2_Send(&dataReg, 1) != 1)
+  {
+    ret = BSP_ERROR_UNKNOWN_FAILURE;
+  }
+
+  if (BSP_SPI2_Send(pdata, len) != len)
+  {
+    ret = BSP_ERROR_UNKNOWN_FAILURE;
+  }
+
+  /* CS Disable */
+  HAL_GPIO_WritePin(BSP_LSM6DSM_CS_PORT, BSP_LSM6DSM_CS_PIN, GPIO_PIN_SET);
+
+  return ret;
+}
+
+/**
+* @brief  Read register by SPI bus for LSM6DSM (#CS704 gyro). Multi-byte reads
+*         auto-increment because IF_INC is set in CTRL3_C.
+* @param  Reg the starting register address to be read
+* @param  pdata the pointer to the data to be read
+* @param  len the length of the data to be read
+* @retval BSP status
+*/
+static int32_t BSP_LSM6DSM_ReadReg(uint16_t Reg, uint8_t *pdata, uint16_t len)
+{
+  int32_t ret = BSP_ERROR_NONE;
+  uint8_t dataReg = (uint8_t)Reg;
+
+  /* CS Enable */
+  HAL_GPIO_WritePin(BSP_LSM6DSM_CS_PORT, BSP_LSM6DSM_CS_PIN, GPIO_PIN_RESET);
+  LSM303AGR_SPI_Write(&hbusspi2, (dataReg) | 0x80);
+  __HAL_SPI_DISABLE(&hbusspi2);
+  SPI_1LINE_RX(&hbusspi2);
+
+  if (len > 1)
+  {
+    LSM303AGR_SPI_Read_nBytes(&hbusspi2, (pdata), len);
+  }
+  else
+  {
+    LSM303AGR_SPI_Read(&hbusspi2, (pdata));
+  }
+
+  /* CS Disable */
+  HAL_GPIO_WritePin(BSP_LSM6DSM_CS_PORT, BSP_LSM6DSM_CS_PIN, GPIO_PIN_SET);
   SPI_1LINE_TX(&hbusspi2);
   __HAL_SPI_ENABLE(&hbusspi2);
   return ret;

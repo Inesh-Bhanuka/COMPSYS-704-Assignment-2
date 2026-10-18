@@ -1,12 +1,14 @@
 # CS704 Project 2 – Group 3: Step Count and Orientation on the SensorTile
 
-Firmware for the STEVAL-STLKT01V1 SensorTile (STM32L476JG + LSM303AGR). It reads the
-accelerometer and magnetometer at 50 Hz and computes the following in real time:
+Firmware for the STEVAL-STLKT01V1 SensorTile (STM32L476JG + LSM303AGR + LSM6DSM). It reads the
+accelerometer, magnetometer and gyroscope at 50 Hz and computes the following in real time:
 
 - **step count and distance**: adaptive peak–valley detection on |a| with a variance gate
   (`step_detector.c`)
-- **heading**: a tilt-compensated compass with hard/soft-iron calibration and magnetic
-  disturbance rejection (`heading.c`)
+- **heading**: a tilt-compensated compass with hard/soft-iron calibration, blended with the
+  gyroscope. The gyro tracks turns, including through magnetic disturbances where the compass
+  is ignored, and the compass removes the gyro's drift. The walking direction is learnt from
+  the accelerometer, so the board can be worn at the waist in any orientation (`heading.c`)
 
 All results are streamed to the ST BLE Sensor app over Bluetooth.
 
@@ -16,12 +18,13 @@ All paths below are relative to `Part2/COMSYS704/Projects/STM32L476JG-SensorTile
 
 | File | Purpose |
 |------|---------|
-| `Src/main.c` | Sensor setup and SPI reads (`startAcc/Mag`, `readAcc/Mag`), the 50 Hz processing loop, and the debug print switches |
+| `Src/main.c` | Sensor setup and SPI reads (`startAcc/Mag/Gyro`, `readAcc/Mag/Gyro`), the 50 Hz processing loop, and the debug print switches |
 | `Src/step_detector.c`, `Inc/step_detector.h` | Step detector and Weinberg step length. Tuning constants live in the header |
-| `Src/heading.c`, `Inc/heading.h` | Compass heading. Tuning constants and the forward-axis setting live in the header |
+| `Src/heading.c`, `Inc/heading.h` | Gyro-aided compass heading. Tuning constants and the forward-axis setting live in the header |
 | `Src/sensor_service.c` | BLE packet that carries acc, mag and the results |
 | `STM32CubeIDE/` | STM32CubeIDE project (`COMSYS704`) |
 | `test/test_heading.c` | Host-side check of the heading maths (not part of the firmware) |
+| `test/replay.c`, `test/plot_log.py` | Replay a recorded UART log through the firmware algorithms on a PC, then plot it and check the mag and gyro axes |
 
 The project refers to `Drivers/` and `Middlewares/` by relative path, so keep the whole
 `Part2/COMSYS704/` tree together.
@@ -48,15 +51,34 @@ The project refers to `Drivers/` and `Middlewares/` by relative path, so keep th
 
 ## Before each demo
 
-1. **Calibrate the compass.** After power-up, rotate the board in a slow figure-8 through all
-   orientations for about 10 s. Until every axis has swung by 800 mG, the heading is raw and
-   uncorrected.
-2. **Wear it with the forward axis level.** The heading is the direction of the board axis set
-   by `HD_FWD_X/Y/Z` in `heading.h` (default: +X). Set this to the axis that points where the
-   wearer walks.
-3. **Sanity check (first time only).** Set `PRINT_HEADING_DEBUG 1` in `main.c` and hold the
-   board still. The `dip` column should read about −63° in Auckland. If it reads +63°, the mag
-   Z axis is flipped relative to the accelerometer.
+The LED flashes for half a second at each step below: calibration done, forward set, forward
+locked. With the laptop attached, the same events print over UART as `HD,<event>`.
+
+1. **Recalibrate the compass.** Hold the board face down (upside down from how it lies on a
+   desk) and still for 3 s. Then, away from phones, laptops and steel, point each of its six
+   faces straight up for about a second each, until the LED flashes ("calibrated"). A reset or
+   power-up also starts a fresh calibration. The gyro bias is learnt whenever the board is still.
+2. **Set forward.** Face the way you will walk. Hold the board flat and face up, with +X pointing
+   straight ahead, still for 2 s, until the LED flashes ("forward set"). This also freezes the
+   calibration, so a phone in the same pocket can't stretch it.
+3. **Put it away** (pocket, belt, any way round) without turning your body, and stand still for
+   a moment. The gyro carries "forward" into the board's new position and locks it once the
+   board settles (LED: "forward locked"; after 8 s at the latest).
+4. **Walk.** The heading is the direction you walk. Repeat step 2 whenever you move the board.
+
+Without step 2 the board learns the walking direction by itself after about 3 s of walking
+(`HD_AUTO_FWD`; worn at the waist, not in a pocket), and before that uses the board axis
+`HD_FWD_X/Y/Z` (default +X).
+
+Replayed lab runs: forward carried into place to within 5° (waist) and 9° (hand); the
+self-learnt walking direction within 3-11° (waist) and 9-16° (hand).
+
+5. **Axis check (new board only).** Record a log while you tumble the board through every pose,
+   then run the axis checks (see *Record and replay* below). They confirm the sensors agree with
+   each other, but they cannot see a mirror image, so also turn the board clockwise on a desk:
+   the heading must go up. On our board the LSM303AGR's axes form a left-handed set (ST's own
+   SensorTile config lists the magnetometer as south-west-up), so `readAcc()`/`readMag()` negate
+   Y, and the LSM6DSM maps to them as x = gy, y = −gx, z = gz in `readGyro()`.
 
 ## Serial debug
 
@@ -64,10 +86,33 @@ The project refers to `Drivers/` and `Middlewares/` by relative path, so keep th
 
 | Switch | Output |
 |--------|--------|
-| `PRINT_STEPS` | `Steps = N` on every counted step |
-| `PRINT_STEP_DEBUG` | `SD,time,\|a\|,filtered,mean,sigma,moving,steps` CSV for tuning |
-| `PRINT_HEADING_DEBUG` | `HD,heading,\|m\|,radius,dip,calibrated,rejected` CSV twice a second |
-| `PRINT_RAW_SENSORS` | raw acc and mag every sample |
+| `PRINT_STEPS` | `SD,<event>,steps=N,p2v=mg,dt=ms` at the end of every peak→valley cycle. `step`/`held` = counted; `still`, `small`, `fast` or `timeout` = why it was rejected (see `step_detector.h`) |
+| `PRINT_HEADING_DEBUG` | `HD,hdg=,m=,R=,dip=,span=,cal=,rej=` twice a second. Watch `span` climb to 800 during the figure-8 |
+| `PRINT_RAW_SENSORS` | `R,t,ax,ay,az,mx,my,mz,gx,gy,gz` every sample (mg, mG, mdps), for replay on a PC |
+
+### Record and replay
+
+Tune from recordings: replay them through the same `step_detector.c`/`heading.c` code on a PC,
+which avoids reflashing and walking the route again.
+
+1. Set `PRINT_RAW_SENSORS 1`, flash, and capture the UART to a file, e.g. on Linux:
+   `stty -F /dev/ttyACM0 115200 raw -echo && cat /dev/ttyACM0 | tee walk.log` (Ctrl-C to stop).
+   PuTTY's session logging also works. Do a figure-8 first, then walk and count the steps.
+2. Replay and plot:
+   ```sh
+   cd Part2/COMSYS704/Projects/STM32L476JG-SensorTile/Applications/ALLMEMS1/test
+   gcc -I../Inc replay.c ../Src/step_detector.c ../Src/heading.c -lm -o replay
+   ./replay < walk.log > walk.csv && python3 plot_log.py walk.csv
+   ```
+   The summary lists each rejection reason with its count, so you can see which constant to tune.
+   The mag axis check ranks all 48 axis swaps/flips by how steady the dip is. The gyro axis
+   check ranks them by how well the gyro explains the way the mag vector rotates. If a candidate
+   beats "as wired", apply it in `readMag()` or `readGyro()`. The plot shows the step signal with
+   its thresholds and each cycle's outcome, the blended heading against the compass-only heading,
+   dip, |m| against the gate, and calibration progress.
+3. Change constants in `step_detector.h`/`heading.h`, rebuild `replay`, and rerun on the same log.
+
+If `replay` warns about gaps, the board dropped samples (usually too much printing).
 
 ## Host test
 
@@ -77,8 +122,11 @@ gcc -I../Inc test_heading.c ../Src/heading.c -lm -o test_heading && ./test_headi
 ```
 
 The test simulates Auckland's field with a hard/soft-iron error, runs a figure-8 sweep, and
-then checks two things: the heading at tilted poses is within 3°, and the heading is held
-when the field is disturbed.
+then checks: the heading at tilted poses is within 3°, a disturbed field is ignored, a 90° turn
+made while the field is disturbed is tracked by the gyro alone, a constant gyro bias is learnt
+and cancelled, the walking direction is learnt from a simulated walk with the board worn upright (and
+again after it is turned round), and the gestures work: forward set face up and carried into a
+pocket, face down to recalibrate.
 
 ## Submission zip
 

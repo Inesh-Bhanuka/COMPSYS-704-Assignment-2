@@ -1,0 +1,289 @@
+% CS704 Project 2 -- Deliverable 5: Group report (max 4 pages, due 19 Oct 5pm)
+% Compile with pdflatex (Overleaf: works as-is). Submit as project2_group03.pdf.
+%
+% Everything in red (\tbd{...}) is a placeholder for OUR measured data or details.
+% Fill them from real trials before submitting -- see the protocol in Section V.
+% Remove the xcolor/\tbd lines once nothing red is left.
+\documentclass[conference,a4paper]{IEEEtran}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{cite}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\newcommand{\tbd}[1]{\textcolor{red}{[#1]}}
+
+\begin{document}
+
+\title{Real-Time Step Counting and Heading Estimation on the SensorTile}
+
+\author{\IEEEauthorblockN{Group 3: \tbd{member names and UPIs}}
+\IEEEauthorblockA{CS704 Project 2, University of Auckland}}
+
+\maketitle
+
+\begin{abstract}
+We present a body-worn tracker for factory workers built on the STMicroelectronics
+SensorTile. Using only the LSM303AGR accelerometer and magnetometer, the firmware counts
+steps, estimates walked distance and reports compass heading in real time, streaming the
+results to a phone over Bluetooth Low Energy. Steps are found by adaptive peak and valley
+detection on the acceleration magnitude, gated by signal variance. Heading comes from a
+tilt-compensated, self-calibrating magnetometer that rejects magnetically disturbed samples.
+\tbd{One sentence with the headline step and heading accuracy from Section V.}
+\end{abstract}
+
+\begin{IEEEkeywords}
+pedestrian dead reckoning, step detection, electronic compass, MEMS, SensorTile
+\end{IEEEkeywords}
+
+\section{Introduction}
+AICorp wants to monitor employee movement inside a factory, where GPS is unavailable and
+installing infrastructure is costly. Step-based pedestrian dead reckoning (PDR) needs only a
+body-worn inertial unit: each detected step advances the position by a step length $L_k$ in
+heading $\psi_k$~\cite{jin2011,tian2016}. The device must therefore produce two quantities
+reliably, a step count and an orientation, on a microcontroller with no gyroscope in use.
+Our literature review found that adaptive thresholds on the orientation-invariant
+magnitude $|\mathbf{a}|$ are robust without placement classification~\cite{lee2015}, that a
+variance-based walk gate suppresses false steps~\cite{brajdic2013}, and that magnetometer
+heading must be tilt-compensated and protected from magnetic disturbance, which is common
+near steel~\cite{jin2011,yuan2015,kuang2018}. The system below follows those findings.
+
+\section{System Overview}
+\subsection{Hardware and Sensor Configuration}
+The SensorTile (STM32L476JG, Cortex-M4F) is worn at the waist and programmed through an
+STLINK-V3. The LSM303AGR is accessed over 3-wire SPI with its I\textsuperscript{2}C
+interface disabled. The accelerometer runs in 12-bit high-resolution mode at 50\,Hz with a
+$\pm4$\,g range, which leaves headroom for heel strikes while giving 1.95\,mg/LSB. Block data
+update stops a read from mixing old and new bytes. The magnetometer runs continuously at
+100\,Hz with temperature compensation, at 1.5\,mG/LSB~\cite{an4825}.
+
+\subsection{Software Structure}
+Timer TIM4 raises a flag every 20\,ms. The main loop then reads both sensors, converts them
+to mg and mG, and calls two independent modules:
+\texttt{StepDetector\_Update()} (step count, distance) and \texttt{Heading\_Update()}
+(heading). Each module keeps its state in one private structure, has its tuning constants
+in its header, and exposes a debug structure. Compile-time switches print these as CSV over
+UART for offline tuning. Results go out in the existing BLE motion characteristic: the
+accelerometer and magnetometer slots carry the raw data, and the gyroscope slots carry
+steps, heading (degrees) and distance, so the provided ST BLE Sensor app plots all three.
+
+\section{Step Detection}
+A waist-worn sensor sees one rise of $|\mathbf{a}|$ above 1\,g at heel strike and push-off,
+then one dip below 1\,g as the body falls into the next step. The detector counts one step
+per peak--valley cycle. All operations are $O(1)$ per sample.
+
+\subsubsection{Pre-processing}
+We use the magnitude $|\mathbf{a}|=\sqrt{a_x^2+a_y^2+a_z^2}$, which does not depend on how
+the board is mounted~\cite{lee2015}. A 5-tap moving average (100\,ms) removes jitter above
+about 4\,Hz to give $f_k$. The first 0.5\,s after reset is discarded while the sensor
+settles.
+
+\subsubsection{Adaptive thresholds}
+A running mean and variance are tracked with exponential moving averages over $N=50$
+samples ($\approx$1\,s):
+\begin{equation}
+\mu_k=\mu_{k-1}+\tfrac{f_k-\mu_{k-1}}{N},\quad
+\sigma_k^2=\sigma_{k-1}^2+\tfrac{(f_k-\mu_{k-1})^2-\sigma_{k-1}^2}{N}.
+\end{equation}
+The thresholds are $T_\pm=\mu_k\pm\max(0.3\,\sigma_k,\,35\,\text{mg})$. They follow the
+walker's intensity, as in~\cite{lee2015}, while the floor keeps them out of the sensor noise.
+
+\subsubsection{Peak--valley state machine}
+In the \emph{seek-peak} state, the largest $f_k$ above $T_+$ is recorded, and the peak ends
+when $f_k$ falls back below $\mu_k$. In the \emph{seek-valley} state, the smallest $f_k$
+below $T_-$ is recorded, and the cycle completes when $f_k$ rises back above $\mu_k$. If no
+valley follows within 1\,s, the peak is discarded.
+
+\subsubsection{Validation}
+A completed cycle counts as a step only if all of the following hold:
+(i) the variance gate is open ($\sigma_k>40$\,mg), so standing still produces no steps,
+following Brajdic and Harle's walk detector~\cite{brajdic2013};
+(ii) the peak-to-valley swing is at least 120\,mg;
+(iii) the time since the previous step is at least
+$\max(250\,\text{ms},\,0.5\,\bar T)$, where $\bar T$ is an adaptive average of recent step
+intervals ($\bar T\leftarrow\bar T+0.2(\Delta t-\bar T)$). This rejects double peaks within
+one step.
+A walk starts only after two consecutive valid steps, which are then credited together. An
+isolated knock or sitting down is therefore never counted. A gap of more than 2\,s ends the
+walk.
+
+\subsubsection{Step length}
+Each step's length uses the Weinberg model~\cite{weinberg2002},
+$L=K\sqrt[4]{a_{\max}-a_{\min}}$, with the swing in m/s\textsuperscript{2} and $K=0.45$.
+\tbd{State K after calibrating over a measured distance.}
+
+\section{Heading Estimation}
+Only the accelerometer and magnetometer are used, so heading is an electronic compass.
+Three problems must be handled: board tilt, distortion from the board's own components,
+and external magnetic disturbance.
+
+\subsubsection{Gravity estimate}
+The accelerometer is low-pass filtered ($\alpha=0.02$, about 1\,s) to give
+$\bar{\mathbf{g}}$. This keeps walking accelerations from tilting the reference frame.
+
+\subsubsection{Hard/soft-iron calibration}
+The board's battery and PCB add a constant offset (hard iron) and scale each axis
+differently (soft iron), so the field traces an offset ellipsoid instead of a sphere
+centred on zero. After power-up the user turns the board in a figure-8 while the firmware
+tracks each axis's extremes. The offset is $o_i=(\max_i+\min_i)/2$, the radius is
+$r_i=(\max_i-\min_i)/2$ and $R=\tfrac13\sum r_i$. The corrected field is
+$m_i=(m^{\text{raw}}_i-o_i)\,R/r_i$. Calibration takes effect once every axis has swung by
+at least 800\,mG; Auckland's field of about 550\,mG gives roughly 1100\,mG over a full turn.
+
+\subsubsection{Disturbance rejection}
+After calibration, a clean field has magnitude $\approx R$. If $\big||\mathbf{m}|-R\big|>0.2R$,
+for example next to steel shelving or motors, the sample is rejected and the last good
+heading is held, as with the quasi-static field detection of~\cite{kuang2018}.
+
+\subsubsection{Tilt-compensated heading}
+Rather than computing roll and pitch angles, we build the North--East--Down frame directly
+in sensor coordinates. With $\mathbf{D}=-\bar{\mathbf{g}}/|\bar{\mathbf{g}}|$ (the
+accelerometer reads $+1$\,g upwards):
+\begin{equation}
+\mathbf{E}=\mathbf{D}\times\mathbf{m},\qquad \mathbf{N}=\mathbf{E}\times\mathbf{D},\qquad
+\psi=\operatorname{atan2}(\mathbf{f}\cdot\mathbf{E},\;\mathbf{f}\cdot\mathbf{N}),
+\end{equation}
+where $\mathbf{f}$ is the board axis that points in the walking direction. This works
+because the Earth's field lies in the North--Down plane, so $\mathbf{D}\times\mathbf{m}$
+always points East. The result is valid at any tilt, avoids Euler-angle singularities, and
+needs one square root and one $\operatorname{atan2}$ per sample.
+
+\subsubsection{Smoothing}
+Waist sway makes $\psi$ oscillate at the step frequency. We smooth $(\cos\psi,\sin\psi)$ with
+an EMA ($\alpha=0.05$, about 0.4\,s) and take the angle of the result. Averaging angles
+directly would turn $359^\circ$ and $1^\circ$ into $180^\circ$; averaging on the unit circle
+avoids this. The output is $[0,360)^\circ$ clockwise from magnetic north.
+
+\section{Performance Analysis}
+\subsection{Heading Validation in Simulation}
+A host-side test (\texttt{test/test\_heading.c}) runs the heading code on synthetic data. It
+uses a field approximating Auckland's (250\,mG north, 490\,mG up, dip $-63^\circ$), distorted
+by a hard-iron offset of $(120,-80,200)$\,mG and soft-iron scales of $(1.15,0.9,1.0)$. After
+a simulated figure-8, six poses with yaw $0$--$359^\circ$, pitch up to $\pm30^\circ$ and roll up
+to $25^\circ$ gave a maximum heading error of $0.09^\circ$. The dip was recovered as
+$-63.0\pm0.1^\circ$. When the field was scaled by 1.5 to mimic nearby steel, every sample was
+rejected and the heading held. This confirms the maths and calibration. It does not cover
+real sensor noise, sway or field distortion, which the trials below measure.
+
+\subsection{Experimental Protocol}
+\tbd{Describe what was actually done. Suggested: device at the waist with the board's +X
+axis forward; three repetitions per scenario; true steps counted by an observer with a
+tally counter; reference bearings from a phone compass, or from the building plan for
+true-north bearings; distances measured with a tape. Logs were captured with
+\texttt{PRINT\_STEP\_DEBUG} / \texttt{PRINT\_HEADING\_DEBUG} over UART at 115200 baud.}
+
+\begin{table}[!t]
+\centering
+\caption{Step count accuracy (mean of \tbd{3} trials)}
+\label{tab:steps}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+Scenario & True & Counted & Error \\
+\midrule
+Normal walk, straight & \tbd{} & \tbd{} & \tbd{}\% \\
+Slow walk & \tbd{} & \tbd{} & \tbd{}\% \\
+Fast walk & \tbd{} & \tbd{} & \tbd{}\% \\
+Walk with 90$^\circ$ turns & \tbd{} & \tbd{} & \tbd{}\% \\
+Stairs & \tbd{} & \tbd{} & \tbd{}\% \\
+Standing 60\,s / sit--stand & 0 & \tbd{} & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[!t]
+\centering
+\caption{Heading accuracy, device at the waist}
+\label{tab:heading}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+Condition & Reference & Measured & Error \\
+\midrule
+Standing, N/E/S/W & 0/90/180/270$^\circ$ & \tbd{} & \tbd{}$^\circ$ \\
+Standing, tilted $\sim$20$^\circ$ & \tbd{} & \tbd{} & \tbd{}$^\circ$ \\
+Walking straight (mean) & \tbd{} & \tbd{} & \tbd{}$^\circ$ \\
+Near steel structure & \tbd{} & \tbd{} & \tbd{}$^\circ$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Results}
+Table~\ref{tab:steps} lists the step-count results. \tbd{Discuss them: the overall error,
+which scenario was worst and why (e.g.\ the first steps of slow walking fall below the
+variance gate, fast steps hit the minimum-interval limit, stairs change the peak shape), and
+whether any false steps occurred while stationary. Add a figure from the
+\texttt{PRINT\_STEP\_DEBUG} log showing $f_k$, $T_\pm$ and the detected steps over a short
+walk -- it shows the algorithm working better than any table.}
+Table~\ref{tab:heading} lists heading accuracy. \tbd{Discuss: static error after
+calibration, effect of tilt, sway amplitude while walking, and how the disturbance gate
+behaved near steel.} Over a \tbd{20}\,m walk the estimated distance was \tbd{}\,m
+(\tbd{}\% error) with $K=$\tbd{}.
+
+\subsection{Computational Cost}
+Both modules use only $O(1)$ work and $\approx$\tbd{} bytes of static RAM per sample at
+50\,Hz. The complete firmware is \tbd{text/data/bss from \texttt{arm-none-eabi-size} after the
+final build}. The processing time per sample is negligible compared with the 20\,ms period.
+
+\section{Limitations}
+\begin{itemize}
+\item \emph{No gyroscope fusion.} During a magnetic disturbance, heading is held, not
+tracked, so a turn made next to steel is missed until the field recovers. Fusing the
+SensorTile's LSM6DSM gyroscope, e.g.\ a complementary or Kalman
+filter~\cite{yuan2015,kuang2018}, would bridge these gaps and reduce sway.
+\item \emph{Calibration.} A figure-8 is needed after every power-up. The min/max method is
+simple, but one magnetic spike during calibration stretches the bounds until reset. An
+ellipsoid fit stored in flash would be more robust.
+\item \emph{Magnetic, not true, north.} No declination correction is applied (about
+$+20^\circ$ in Auckland). This is fine for relative tracking, but it must be added before
+comparing against a map.
+\item \emph{Fixed placement.} Thresholds were tuned for a waist-worn device. Pocket or
+handheld use changes the signal shape~\cite{tian2016,kuang2018}, and the forward axis is a
+compile-time constant.
+\item \emph{Step length.} $K$ is per user and the Weinberg model ignores step frequency, so
+distance error grows for walkers unlike the calibration subject~\cite{tian2016}.
+\item \emph{Latency.} The two-step confirmation delays the first count of each walk by one
+step, and heading smoothing adds about 0.4\,s lag on turns.
+\end{itemize}
+
+\section{Conclusion}
+The firmware meets the brief: it counts steps and reports orientation in real time over BLE
+using only an accelerometer and magnetometer, in two small modules that can be tested
+independently. \tbd{Summarise the measured accuracy.} The main improvement would be gyroscope
+fusion, which addresses the dominant failure mode in a factory: heading loss near steel.
+
+\begin{thebibliography}{8}
+\bibitem{jin2011}
+Y.~Jin, H.-S. Toh, W.-S. Soh, and W.-C. Wong, ``A robust dead-reckoning pedestrian
+tracking system with low cost sensors,'' in \emph{Proc. IEEE PerCom}, 2011, pp.~222--230.
+
+\bibitem{tian2016}
+Q.~Tian, Z.~Salcic, K.~I.-K. Wang, and Y.~Pan, ``A multi-mode dead reckoning system for
+pedestrian tracking using smartphones,'' \emph{IEEE Sensors J.}, vol.~16, no.~7,
+pp.~2079--2093, 2016.
+
+\bibitem{lee2015}
+H.-H. Lee, S.~Choi, and M.-J. Lee, ``Step detection robust against the dynamics of
+smartphones,'' \emph{Sensors}, vol.~15, no.~10, pp.~27230--27250, 2015.
+
+\bibitem{brajdic2013}
+A.~Brajdic and R.~Harle, ``Walk detection and step counting on unconstrained
+smartphones,'' in \emph{Proc. ACM UbiComp}, 2013, pp.~225--234.
+
+\bibitem{yuan2015}
+X.~Yuan, S.~Yu, S.~Zhang, G.~Wang, and S.~Liu, ``Quaternion-based unscented Kalman filter
+for accurate indoor heading estimation using wearable multi-sensor system,''
+\emph{Sensors}, vol.~15, no.~5, pp.~10872--10890, 2015.
+
+\bibitem{kuang2018}
+J.~Kuang, X.~Niu, and X.~Chen, ``Robust pedestrian dead reckoning based on MEMS-IMU for
+smartphones,'' \emph{Sensors}, vol.~18, no.~5, Art.~no.~1391, 2018.
+
+\bibitem{weinberg2002}
+H.~Weinberg, ``Using the ADXL202 in pedometer and personal navigation applications,''
+Analog Devices, Application Note AN-602, 2002.
+
+\bibitem{an4825}
+STMicroelectronics, ``AN4825: Ultra-compact high-performance eCompass module based on the
+LSM303AGR,'' Application Note.
+\end{thebibliography}
+
+\end{document}

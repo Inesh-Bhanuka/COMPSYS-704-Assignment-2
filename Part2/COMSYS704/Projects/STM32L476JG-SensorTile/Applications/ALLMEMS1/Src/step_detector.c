@@ -91,8 +91,12 @@ static uint8_t sd_validateStep(uint8_t moving)
   float p2v = sd.peakVal - sd.valleyVal;
   uint32_t stepTime = sd.peakTime;     /* a step is time-stamped at its peak */
 
+  sd.dbg.p2v = p2v;
+  sd.dbg.dt  = sd.haveLastStep ? stepTime - sd.lastStepTime : 0U;
+
   /* Reject when standing still or when the swing is too small (noise, fidgeting) */
   if (!moving || p2v < SD_MIN_P2V_MG) {
+    sd.dbg.event = !moving ? "still" : "small";
     return 0;
   }
 
@@ -105,6 +109,7 @@ static uint8_t sd_validateStep(uint8_t moving)
       minDt = (float)SD_MIN_STEP_MS;
     }
     if (dt < minDt) {
+      sd.dbg.event = "fast";
       return 0;
     }
     if (dt <= (float)SD_MAX_STEP_MS) {
@@ -118,6 +123,7 @@ static uint8_t sd_validateStep(uint8_t moving)
   sd.lastStepLenM = SD_WEINBERG_K * sqrtf(sqrtf(p2v * MG_TO_MS2));
 
   /* Inside a confirmed walk: count straight away */
+  sd.dbg.event = "step";
   if (sd.counting) {
     sd.steps++;
     sd.distanceM += sd.lastStepLenM;
@@ -137,6 +143,7 @@ static uint8_t sd_validateStep(uint8_t moving)
     sd.counting     = 1;
     return added;
   }
+  sd.dbg.event = "held";
   return 0;
 }
 
@@ -184,6 +191,9 @@ uint8_t StepDetector_Update(int32_t ax, int32_t ay, int32_t az, uint32_t t_ms)
     sd.warmup--;
     return 0;
   }
+  sd.dbg.event = 0;
+  sd.dbg.p2v   = 0.0f;
+  sd.dbg.dt    = 0U;
 
   /* 1. Magnitude: orientation-independent, ~1000 mg when still */
   mag = sqrtf(fx * fx + fy * fy + fz * fz);
@@ -254,6 +264,7 @@ uint8_t StepDetector_Update(int32_t ax, int32_t ay, int32_t az, uint32_t t_ms)
     } else if ((t_ms - sd.peakTime) > SD_PEAK_TIMEOUT_MS) {
       sd.belowLow = 0;                         /* no valley followed: discard the peak */
       sd.state    = SD_SEEK_PEAK;
+      sd.dbg.event = "timeout";
     }
     break;
   }
@@ -263,6 +274,8 @@ uint8_t StepDetector_Update(int32_t ax, int32_t ay, int32_t az, uint32_t t_ms)
   sd.dbg.filt   = f;
   sd.dbg.mean   = sd.mean;
   sd.dbg.sigma  = sigma;
+  sd.dbg.thrHigh = thrHigh;
+  sd.dbg.thrLow  = thrLow;
   sd.dbg.moving = moving;
 
   return added;

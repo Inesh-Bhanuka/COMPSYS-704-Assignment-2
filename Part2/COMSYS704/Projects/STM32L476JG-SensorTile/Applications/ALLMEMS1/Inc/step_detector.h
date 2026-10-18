@@ -48,7 +48,16 @@ typedef struct {
   float   filt;     /* low-pass filtered |a| (mg)   */
   float   mean;     /* running mean of filt (mg)    */
   float   sigma;    /* running std-dev of filt (mg) */
+  float   thrHigh;  /* peak threshold (mg)          */
+  float   thrLow;   /* valley threshold (mg)        */
   uint8_t moving;   /* 1 = variance gate open       */
+  /* Outcome of a peak->valley cycle, set only on the sample that finishes it (else 0):
+   * "step" counted, "held" waiting for SD_CONFIRM_STEPS, "still" variance gate shut,
+   * "small" p2v < SD_MIN_P2V_MG, "fast" too soon after the last step,
+   * "timeout" no valley within SD_PEAK_TIMEOUT_MS */
+  const char *event;
+  float   p2v;      /* peak-to-valley swing of that cycle (mg)       */
+  uint32_t dt;      /* ms from the previous counted step to its peak */
 } StepDetectorDebug;
 
 void     StepDetector_Init(void);
