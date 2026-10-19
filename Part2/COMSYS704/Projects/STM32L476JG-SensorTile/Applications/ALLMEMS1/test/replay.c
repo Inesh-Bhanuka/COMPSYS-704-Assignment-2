@@ -6,6 +6,7 @@
  * Older logs without the gyro columns replay with the gyro reading zero.
  * To tune: edit the constants in the headers, rebuild, rerun. No reflash, no re-walk. */
 #include <stdio.h>
+#include <string.h>
 #include "step_detector.h"
 #include "heading.h"
 
@@ -41,6 +42,9 @@ int main(void)
     h = Heading_Update(ax, ay, az, mx, my, mz, gx, gy, gz, (uint32_t)t);
     StepDetector_GetDebug(&s);
     Heading_GetDebug(&d);
+    if (d.event && strcmp(d.event, "forward set") == 0) {
+      StepDetector_Reset();                   /* as main.c: setup done, count from zero */
+    }
     printf("%lu,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%d,%s,%.0f,%lu,%lu,%lu,"
            "%.1f,%.1f,%.1f,%.1f,%.1f,%.0f,%d,%d,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d,%s\n",
            t, ax, ay, az, mx, my, mz, gx, gy, gz, s.mag, s.filt, s.mean, s.thrHigh, s.thrLow,

@@ -12,6 +12,8 @@
 \usepackage{xcolor}
 \usepackage{tikz}
 \usetikzlibrary{positioning,arrows.meta}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.17}
 \usepackage[hidelinks]{hyperref}
 \newcommand{\tbd}[1]{\textcolor{red}{[#1]}}
 
@@ -34,8 +36,8 @@ count does not depend on how the board is worn. Heading comes from a tilt-compen
 self-calibrating magnetometer combined with the SensorTile's gyroscope, which keeps turns
 tracked near steel, where the magnetic field is distorted. The walking direction is either
 learnt from the motion of the body or set with a hand gesture, so the board can be carried in
-a trouser pocket. In our trials every step on a 44-step route was counted, and on a repeat of
-the route the heading on the long straight legs was within 3 degrees of a phone compass.
+a trouser pocket. In our trials the step count was within 1.3 percent over 239 steps, and with the board
+held flat the heading was within 7.4 degrees of a phone compass.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -52,24 +54,14 @@ results are shown in the ST BLE Sensor phone app.
 
 With a step length added, the step count and heading are enough to rebuild a walked path from
 a known starting point. This is known as pedestrian dead reckoning (PDR)~\cite{jin2011,tian2016}.
-Our device has to stay accurate in a factory, where steel structures and machinery distort the
+Integrating acceleration twice drifts within seconds with low-cost sensors unless the sensor is
+on the foot~\cite{jin2011}, so body-worn systems instead move the position forward by one step
+length in the current heading at every detected step. Our device has to stay accurate in a factory, where steel structures and machinery distort the
 Earth's magnetic field, and it should work however the worker carries it.
 
 \section{Background}
-\subsection{Pedestrian Dead Reckoning}
-Integrating acceleration twice to get position drifts within seconds with low-cost MEMS
-sensors, unless the sensor is mounted on the foot and corrected every time the foot is flat on
-the ground~\cite{jin2011}. Body-worn systems therefore use step-based PDR, where each detected
-step moves the position forward by a step length $L_k$ in the current heading $\psi_k$:
-\begin{equation}
-\mathbf{p}_k=\mathbf{p}_{k-1}+L_k\,[\cos\psi_k,\ \sin\psi_k]^{\mathsf T}.
-\end{equation}
-The problem then splits into three parts: detecting steps, estimating their length, and
-estimating the heading.
-
 \subsection{Step Detection}
-Most step detectors look for the periodic peaks that walking produces in the acceleration.
-Jin et al.~\cite{jin2011} rotate the acceleration into a world frame and look for a peak
+Most step detectors look for the periodic peaks of walking in the acceleration. Jin et al.~\cite{jin2011} rotate the acceleration into a world frame and look for a peak
 followed by a valley on the vertical axis. Tian et al.~\cite{tian2016} first work out how the
 phone is carried (held, swinging or in a pocket) and then apply a threshold to the axis that
 suits that mode. Lee et al.~\cite{lee2015} avoid both by using the magnitude of the
@@ -87,9 +79,9 @@ al.~\cite{tian2016} integrated the gyroscope instead and learnt the offset betwe
 and the walking direction, but gyroscope drift then became their largest error. Filter-based
 methods combine the two. Yuan et al.~\cite{yuan2015} used a quaternion unscented Kalman filter
 in which the gyroscope predicts the orientation and the accelerometer and magnetometer correct
-it, and achieved a mean heading error below $10^\circ$ with a waist-mounted sensor. Kuang et
-al.~\cite{kuang2018} only used the magnetometer while the field was steady. Their heading error
-was $2.3^\circ$ RMS with the phone in the hand but $16.6^\circ$ in a pocket.
+it, reaching under $10^\circ$ mean error at the waist. Kuang et al.~\cite{kuang2018} only used
+the magnetometer while the field was steady, with $2.3^\circ$ RMS error in the hand but
+$16.6^\circ$ in a pocket.
 
 \begin{table}[!t]
 \centering
@@ -97,28 +89,27 @@ was $2.3^\circ$ RMS with the phone in the hand but $16.6^\circ$ in a pocket.
 \setlength{\tabcolsep}{3pt}
 \caption{Approaches in the reviewed literature}
 \label{tab:lit}
-\begin{tabular}{@{}l>{\raggedright\arraybackslash}p{2.55cm}>{\raggedright\arraybackslash}p{2.35cm}>{\raggedright\arraybackslash}p{1.75cm}@{}}
+\begin{tabular}{@{}llll@{}}
 \toprule
 Work & Step detection & Heading & Reported result \\
 \midrule
-\cite{jin2011} & Peak--valley, vertical axis & Compass, two devices fused & up to 73.7\% less error \\
-\cite{tian2016} & Carrying mode, then threshold & Gyroscope, learnt offset & 98.9\% position accuracy \\
-\cite{lee2015} & Adaptive thresholds on $|\mathbf{a}|$ & -- & 99.5\% of steps \\
-\cite{brajdic2013} & Benchmark of eight methods & -- & median error $<$1.3\% \\
-\cite{yuan2015} & -- & Kalman filter, gyro + acc + mag & $<$10$^\circ$ mean \\
-\cite{kuang2018} & Peak, Weinberg length & Kalman filter, steady-field mag & 2.3--16.6$^\circ$ RMS \\
+\cite{jin2011} & Vertical peak--valley & Compass only & 73.7\% less error \\
+\cite{tian2016} & Carrying mode first & Gyro, learnt offset & 98.9\% position \\
+\cite{lee2015} & Adaptive, on $|\mathbf{a}|$ & -- & 99.5\% of steps \\
+\cite{brajdic2013} & Eight compared & -- & $<$1.3\% median \\
+\cite{yuan2015} & -- & Kalman, gyro+mag & $<$10$^\circ$ mean \\
+\cite{kuang2018} & Peak, Weinberg & Kalman, steady mag & 2.3--16.6$^\circ$ RMS \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsection{Implications for This Project}
-Table~\ref{tab:lit} summarises these works. Two findings shaped our design. First, adaptive
-thresholds on the acceleration magnitude count steps well without knowing how the device is
-carried~\cite{lee2015,brajdic2013}. Second, a magnetometer-only heading is cheap but
-unreliable near steel, and the usual fix is to combine it with a gyroscope and ignore the
-magnetometer when the field looks disturbed~\cite{yuan2015,kuang2018}. Since a factory is full
-of steel, we decided to use the SensorTile's gyroscope as well, even though the brief only
-mentions the accelerometer and magnetometer.
+Table~\ref{tab:lit} summarises these works. Two findings shaped our design. Adaptive thresholds
+on the acceleration magnitude count steps well however the device is
+carried~\cite{lee2015,brajdic2013}, and a magnetometer-only heading is unreliable near steel,
+where the usual fix is to add a gyroscope and ignore the magnetometer when the field looks
+disturbed~\cite{yuan2015,kuang2018}. Since a factory is full of steel, we used the SensorTile's
+gyroscope as well, even though the brief only mentions the accelerometer and magnetometer.
 
 \section{System Design}
 \subsection{Overview}
@@ -130,14 +121,11 @@ code already used. The accelerometer and magnetometer slots carry the raw data, 
 gyroscope slots carry the step count, heading and distance, so the ST BLE Sensor app can plot
 all of them without any changes.
 
-The accelerometer runs at 50\,Hz with a $\pm4$\,g range in 12-bit mode, which gives a
-resolution of 1.95\,mg and leaves headroom for heel strikes. The magnetometer runs at 100\,Hz
-with temperature compensation, and the gyroscope at 52\,Hz with a $\pm500$\,dps range. All
-three use block data update, so a reading never mixes bytes from two samples. The sensors do
-not share the same axes. The gyroscope chip is rotated by $90^\circ$ relative to the
-LSM303AGR, and the LSM303AGR's own axes turned out to be mirrored, which we only noticed when
-the heading went down instead of up as the board was turned clockwise. The firmware maps all
-readings into one right-handed frame before using them.
+The accelerometer runs at 50\,Hz with a $\pm4$\,g range in 12-bit mode (1.95\,mg
+resolution), the magnetometer at 100\,Hz with temperature compensation, and the gyroscope at
+52\,Hz with a $\pm500$\,dps range, all with block data update. The gyroscope chip is rotated
+by $90^\circ$ relative to the LSM303AGR, whose own axes turned out to be mirrored, so the
+firmware maps all readings into one right-handed frame.
 
 \begin{figure*}[!t]
 \centering
@@ -184,10 +172,9 @@ walking-direction learner.}
 
 \subsection{Step Detection}
 Wherever the board is worn, each step produces a rise in acceleration above 1\,g at heel strike
-and a dip below 1\,g as the body falls into the next step, and we count one step for each rise
-followed by a dip. So that the count does not depend on how the board is worn, the detector
-uses the magnitude $|\mathbf{a}|$ rather than a single axis, smoothed with a 5-sample
-(100\,ms) moving average.
+and a dip below 1\,g as the body falls into the next step. The detector counts one step for
+each rise followed by a dip in the magnitude $|\mathbf{a}|$, which does not depend on how the
+board is worn, smoothed with a 5-sample (100\,ms) moving average.
 
 The thresholds adapt to the walker. A running mean $\mu$ and standard deviation $\sigma$ of the
 smoothed signal are kept with exponential moving averages over about one second, and the upper
@@ -205,17 +192,13 @@ swing from peak to valley must be at least 120\,mg. The step must also not come 
 the previous one: the minimum gap is half the recent average step interval, and never less
 than 250\,ms, which stops a double bump within one step from being counted twice. Counting only
 starts after two valid steps in a row, so a single knock or sitting down adds nothing, and a
-pause longer than 2\,s ends the walk. Every rejected cycle is printed over UART with the reason
-it failed, which made tuning much easier.
+pause longer than 2\,s ends the walk.
 
 Each step's length is estimated with the Weinberg model~\cite{weinberg2002},
 $L=K\sqrt[4]{a_{\max}-a_{\min}}$, using the peak-to-valley swing in m/s\textsuperscript{2} and
 $K=0.45$. The distance is the sum of the step lengths.
 
 \subsection{Heading Estimation}
-Heading is reported in degrees clockwise from magnetic north. It comes from the corrected
-magnetometer, while the gyroscope follows turns and carries it through distorted areas.
-
 \subsubsection{Gravity}
 Tilt correction needs to know which way is down. The accelerometer gives this when the board is
 still, but while walking it also measures the body's motion. Each sample, the firmware rotates
@@ -259,10 +242,8 @@ next to steel benches, the magnetometer term is skipped and the gyroscope carrie
 alone, similar to~\cite{kuang2018}.
 
 \subsection{Direction of Travel}
-Equation (3) needs to know which board axis points the way the wearer walks. By default this is
-the $+X$ axis, but the firmware can also find it in two other ways.
-
-When the board is at the waist or in a hand, the body rocks forwards and backwards with each
+Equation (3) needs the board axis that points the way the wearer walks. By default this is
+$+X$, but the firmware can also find it in two other ways. When the board is at the waist or in a hand, the body rocks forwards and backwards with each
 step more than it sways sideways. The firmware tracks the direction of the largest horizontal
 acceleration, which gives the walking line, and decides which end is forward from the timing of
 this swing relative to the vertical bounce. After 3\,s of steady walking, the learnt direction
@@ -273,103 +254,164 @@ holds the board flat with $+X$ pointing ahead for 2\,s. The firmware takes $+X$ 
 the gyroscope to keep track of that direction while the board is put into the pocket, and fixes
 it to the board once the board has settled. Whenever the forward direction changes, the heading
 is turned by the same angle so that it does not jump. The gesture also freezes the calibration
-and resets the step count, so steps counted while calibrating are dropped, and holding the
-board face down for 3\,s starts a new calibration. The LED flashes after each of these events,
-so the device can be set up without looking at the phone.
+and resets the step count, holding the board face down for 3\,s starts a new calibration, and
+the LED flashes after each of these events.
 
 \section{System Performance}
 \subsection{Testing Method}
 We streamed every raw sample over UART to a laptop while walking with the board, then replayed
-the recordings through the same step and heading code on a PC. This let us try different
-settings on the same walk without reflashing the board or walking the route again. All of the
-results below come from replaying recordings through the final code.
+the recordings through the same step and heading code on a PC, so settings could be tried on
+the same walk without walking it again. All results below come from the final code. In
+simulation, the heading at six tilted poses was within $0.8^\circ$ of the true value.
 
-The heading code was also checked with a test program that simulates the board in Auckland's
-field with an artificial hard and soft iron error. In simulation the heading at six tilted
-poses was within $0.8^\circ$ of the true value, a $90^\circ$ turn made while the magnetometer
-was rejected was measured as $89.9^\circ$, and a 4\,dps gyroscope offset was learnt exactly.
+Early tests were done in a level~7 laboratory full of steel benches, where the field strength
+varied between 413 and 894\,mG along a single walk. The final tests used the final firmware in a
+room with a strong disturbance at one end (up to 1.8 times the normal field). The reference was
+a phone compass set to magnetic north. One group member walked all trials with the board in a
+trouser pocket.
 
-Most real tests were done in a level~7 laboratory full of steel benches, where the field
-strength varied between 413 and 894\,mG along a single walk. The heading reference was a phone
-compass set to magnetic north and held away from the board. All trials were walked by one
-group member.
+\begin{figure}[!t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=\columnwidth, height=3.9cm, xmin=0, xmax=14.5, ymin=700, ymax=1350,
+  xlabel={Time (s)}, ylabel={Acceleration (mg)}, tick label style={font=\scriptsize},
+  label style={font=\footnotesize}, legend columns=4,
+  legend style={font=\scriptsize, draw=none, at={(0.5,1.02)}, anchor=south}]
+\addplot[black, thin] table[x=t, y=filt] {data/steps.dat};
+\addplot[gray, densely dashed] table[x=t, y=hi] {data/steps.dat};
+\addplot[gray, densely dashed, forget plot] table[x=t, y=lo] {data/steps.dat};
+\addplot[gray!50, thin] table[x=t, y=mean] {data/steps.dat};
+\addplot[only marks, mark=*, mark size=1.2pt, red] table[x=t, y=filt] {data/stepmarks.dat};
+\legend{Filtered $|\mathbf{a}|$, $T_\pm$, Mean $\mu$, Step counted}
+\end{axis}
+\end{tikzpicture}
+\caption{One 20-step run with the board in a trouser pocket. Each step is counted when the
+signal climbs back above the mean after its valley; 19 of the 20 steps were counted.}
+\label{fig:steps}
+\end{figure}
 
 \begin{table}[!t]
 \centering
 \caption{Step count with the board in a trouser pocket}
 \label{tab:steps}
-\begin{tabular}{@{}lrrr@{}}
+\begin{tabular}{@{}lrr@{}}
 \toprule
-Trial & Walked & Counted & Error \\
+Trial & Walked & Counted \\
 \midrule
-Reference route, run 1 (15/7/7/15) & 44 & 44 & 0\% \\
-Lower-floor route, 2 straight legs & $\approx$29 & 29 & -- \\
-Route with turns and a U-turn & $\approx$71 & 74 & +4\% \\
-Standing still (all trials) & 0 & 0 & -- \\
-Calibration, board turned by hand & 0 & 29 & -- \\
+Out and back & 35 & 35 \\
+Three straight runs & 20, 20, 20 & 19, 19, 20 \\
+Route, legs 2--4 (7/7/15) & 29 & 31 \\
+Reference route (15/7/7/15) & 44 & 44 \\
+Route with turns and a U-turn & $\approx$71 & 74 \\
+\midrule
+Total & 239 & 242 (+1.3\%) \\
+\midrule
+Standing still (all trials) & 0 & 0 \\
+Sitting down and standing up, 3 times & 0 & 2 \\
+Pocketing after the forward gesture & 0 & 3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Step Detection}
+In Fig.~\ref{fig:steps} the thresholds sit about 36\,mg either side of the mean while each
+stride swings the signal by several hundred mg. Over the 239 walked steps in
+Table~\ref{tab:steps} the board counted 242 (1.3\% high), and none while standing still.
+
+The weakness is handling. Turning the board by hand during calibration produced up to 29 false
+steps, so the final firmware resets the count at the forward gesture that ends the routine.
+Pocketing the board after that added 3 steps, and sitting down and standing up three times 2.
+
+\begin{figure}[!t]
+\centering
+\begin{tikzpicture}
+\pgfplotsset{magplot/.style={width=4.5cm, height=4.5cm, xmin=-750, xmax=950, ymin=-750,
+  ymax=950, xtick={-500,0,500}, ytick={-500,0,500}, tick label style={font=\scriptsize},
+  label style={font=\footnotesize}, title style={font=\footnotesize, yshift=-1ex},
+  xlabel={Field (mG)}}}
+\begin{axis}[magplot, name=raw, title={Raw}, ylabel={Field (mG)}]
+\addplot[only marks, mark size=0.35pt, blue] table[x=x, y=y] {data/magraw.dat};
+\addplot[only marks, mark size=0.35pt, red] table[x=y, y=z] {data/magraw.dat};
+\addplot[only marks, mark size=0.35pt, green!50!black] table[x=z, y=x] {data/magraw.dat};
+\end{axis}
+\begin{axis}[magplot, at={(raw.east)}, anchor=west, xshift=2mm, title={Calibrated},
+  yticklabels={}, legend style={font=\scriptsize, draw=none, at={(0.98,0.98)}, anchor=north east},
+  legend image post style={mark size=1.5pt}]
+\addplot[only marks, mark size=0.35pt, blue] table[x=x, y=y] {data/magcal.dat};
+\addplot[only marks, mark size=0.35pt, red] table[x=y, y=z] {data/magcal.dat};
+\addplot[only marks, mark size=0.35pt, green!50!black] table[x=z, y=x] {data/magcal.dat};
+\legend{X--Y, Y--Z, Z--X}
+\end{axis}
+\end{tikzpicture}
+\caption{Magnetometer readings while the board was turned through all six faces, before and after
+calibration, shown as three projections.}
+\label{fig:mag}
+\end{figure}
+
+\begin{table}[!t]
+\centering
+\caption{Heading with the board held flat}
+\label{tab:nesw}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Direction & N & E & S & W \\
+\midrule
+Expected & 0$^\circ$ & 90$^\circ$ & 180$^\circ$ & 270$^\circ$ \\
+Measured & 0.2$^\circ$ & 94.0$^\circ$ & 187.4$^\circ$ & 275.7$^\circ$ \\
+Error & $+0.2^\circ$ & $+4.0^\circ$ & $+7.4^\circ$ & $+5.7^\circ$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{table}[!t]
 \centering
-\caption{Heading on the reference route, run 2 (pocket)}
-\label{tab:heading}
-\begin{tabular}{@{}lrrr@{}}
+\caption{Heading on two walks of the same route (pocket)}
+\label{tab:route}
+\begin{tabular}{@{}lrrrr@{}}
 \toprule
-Segment & Reference & Measured & Error \\
+& \multicolumn{2}{c}{Run 1} & \multicolumn{2}{c}{Run 2} \\
+\cmidrule(lr){2-3}\cmidrule(l){4-5}
+Leg & Measured & Error & Measured & Error \\
 \midrule
-Held flat at the gesture & 89$^\circ$ & 91.3$^\circ$ & $+2.3^\circ$ \\
-In the pocket, standing & 89$^\circ$ & 94.6$^\circ$ & $+5.6^\circ$ \\
-Leg 1, 15 steps & 89$^\circ$ & 89.3$^\circ$ & $+0.3^\circ$ \\
-Leg 2, 5 steps (right turn) & 179$^\circ$ & 170.9$^\circ$ & $-8.1^\circ$ \\
-Leg 3, 6 steps (turn-around) & 359$^\circ$ & 341.1$^\circ$ & $-17.9^\circ$ \\
-Leg 4, 13 steps (left turn) & 269$^\circ$ & 272.1$^\circ$ & $+3.1^\circ$ \\
+1, ahead & 89.3$^\circ$ & $+0.3^\circ$ & 95.6$^\circ$ & $+5.6^\circ$ \\
+2, right turn & 170.9$^\circ$ & $-8.1^\circ$ & 180.9$^\circ$ & $+0.9^\circ$ \\
+3, turn-around & 341.1$^\circ$ & $-17.9^\circ$ & 14.3$^\circ$ & $+14.3^\circ$ \\
+4, left turn & 272.1$^\circ$ & $+3.1^\circ$ & 285.5$^\circ$ & $+15.5^\circ$ \\
 \midrule
-Mean absolute error, legs & & & $7.4^\circ$ \\
+Mean absolute error & & $7.4^\circ$ & & $9.1^\circ$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Step Detection}
-Table~\ref{tab:steps} shows the step counts with the board in a trouser pocket. The count was
-exact on the 44-step reference route and 4\% high on a longer route with several turns, and no
-steps were counted in any period of standing still. Because the detector uses the acceleration
-magnitude, no changes were needed to make it work in a pocket.
-
-The weakness we found was handling. Turning the board over by hand during calibration produced
-up to 29 false steps, because shaking the board looks a lot like walking to an accelerometer.
-Since the calibration routine always ends with the forward gesture, the final firmware resets
-the count at that point.
-
 \subsection{Heading}
-Table~\ref{tab:heading} shows a second walk of the reference route with the board in a pocket.
-In this run the wearer held the board the wrong way round during the forward gesture, which put
-every reading out by exactly $180^\circ$; the table has this offset removed. Held flat, the
-board was $2.3^\circ$ from the phone compass. Both long legs were within about $3^\circ$, even
-after three turns, so the error did not build up over the route. The short legs were less
-accurate because they were mostly made up of the turns at each end, and in a pocket the heading
-swings by 10--15$^\circ$ with every stride.
+Fig.~\ref{fig:mag} shows the magnetometer during calibration. The raw readings are centred on
+$(-123,-73,367)$\,mG, mostly because of the board itself, and their strength varied from 257 to
+946\,mG with orientation. After calibration the readings lie close to circles centred on zero,
+with a strength of $551\pm9$\,mG, which matches Auckland's field of about 550\,mG.
 
-The gyroscope made the biggest difference near steel. Before we added it, the heading froze for
-about two and a half minutes while the board sat next to a steel bench. On a route on a lower
-floor, the magnetometer was rejected for 69\% of the walk, yet the gyroscope still measured a
-$90^\circ$ turn as $83^\circ$ and the turn-arounds as 170--175$^\circ$.
+Table~\ref{tab:nesw} shows the heading with the board held flat and pointed north, east, south
+and west using the phone compass. The mean error was $4.3^\circ$, which is close to how
+accurately the board can be lined up with a phone by hand.
 
-We also checked both ways of finding the forward direction against a reference worked out from
-the gyroscope. The gesture was within $5^\circ$ at the waist and $9^\circ$ in the hand, and the
-direction learnt from walking was within 3--11$^\circ$ at the waist and 9--16$^\circ$ in the
-hand. As expected, learning from the gait did not work in a pocket.
+Table~\ref{tab:route} shows two walks of the same route: steps ahead (first bearing 89$^\circ$
+and 90$^\circ$), a right turn, a turn-around and a left turn. In both runs the wearer pointed the
+wrong end of the board ahead during the forward gesture, which put every reading out by exactly
+$180^\circ$, and the table has this offset removed. The long legs of run 1 were within about
+$3^\circ$. Run 2 passed the disturbed end of the room, where the magnetometer was ignored for
+57--70\% of every leg, so the heading came mostly from the gyroscope; it still measured the turns
+as $85^\circ$, $279^\circ$ and $190^\circ$ against $90^\circ$, $270^\circ$ and $180^\circ$. Short
+legs are less accurate because they are mostly the turns at each end, and in a pocket the heading
+swings by 10--15$^\circ$ with every stride. Against a reference worked out from the gyroscope, the forward direction set by the gesture was
+within $5^\circ$ at the waist and $9^\circ$ in the hand. Learnt from walking, it was within
+3--11$^\circ$ at the waist and 9--16$^\circ$ in the hand, and as expected it did not work in a
+pocket.
 
 \subsection{Design Choices}
-Several of our design decisions came from problems we found while testing.
-
-Our first version used only the magnetometer, as the brief suggests, and held the last heading
-whenever the field looked disturbed. In the laboratory the heading froze for minutes at a time,
-and any turn made while it was frozen was lost, so we added the gyroscope. We first pulled the
-heading towards the magnetometer with a time constant of 2\,s. Replaying our lab walks with
-10\,s halved the heading wobble, because over a few seconds in a distorted building the
-gyroscope is more trustworthy than the magnetometer.
+Several design decisions came from problems found in testing. Our first version used only the magnetometer, as the brief suggests, and held the last heading
+whenever the field looked disturbed. In the laboratory the heading froze for up to two and a
+half minutes, losing any turn made meanwhile, so we added the gyroscope. Replaying our lab walks
+with a 10\,s time constant instead of 2\,s halved the heading wobble, because over a few seconds
+in a distorted building the gyroscope is more trustworthy than the magnetometer.
 
 A plain low-pass filter on the accelerometer gave a good gravity estimate at the waist but
 lagged behind a board in a pocket, which tilts by about $30^\circ$ with every stride. With that
@@ -377,39 +419,33 @@ lag, a $180^\circ$ turn in a pocket was measured as $159^\circ$. Rotating the es
 gyroscope before filtering brought this to $175^\circ$.
 
 The min/max calibration is simple, but a single magnet near the board stretches it. Two
-calibrations done while holding the laptop gave a field radius of 616--628\,mG instead of about
-550\,mG, which made the 20\% check reject good readings more often. This is why the calibration
-is frozen by the forward gesture and can be restarted with a gesture instead of a reset.
+calibrations done while holding the laptop gave a radius of 616--628\,mG instead of about
+550\,mG, so good readings failed the 20\% check more often. This is why the calibration is
+frozen by the forward gesture and can be restarted without a reset.
 
-Our first sensor checks compared the sensors against each other, which cannot reveal a mirror
-image. Turning the board clockwise on a desk showed that left and right turns were swapped, and
-negating the LSM303AGR's Y axis fixed it.
-
-Both modules are small: 1.3\,kB of code for steps and 4.4\,kB for heading, with under 0.5\,kB
-of RAM between them, and the loop kept its 50\,Hz rate even while logging every sample.
+Turning the board clockwise on a desk showed that left and right turns were swapped, which our
+earlier sensor checks could not reveal; negating the LSM303AGR's Y axis fixed it. Both modules are small, with 1.3\,kB of code for steps
+and 4.4\,kB for heading, and the loop kept its 50\,Hz rate even while logging every sample.
 
 \subsection{Limitations}
-Putting the board into a pocket after the forward gesture can still add a few steps. The
-gyroscope rate, which we measured at 11--74\,dps while walking and 110--150\,dps while handling
-the board, could be used to block these. The calibration is lost at every reset and is only as
-good as the place it was done in.
+Putting the board away after the forward gesture, or sitting down, can still add a few steps.
+The gyroscope rate (11--74\,dps walking, 110--150\,dps handling) could block these. The
+calibration is lost at every reset. The forward gesture relies on the user knowing which end is
+$+X$, and in both route runs the wrong end was pointed ahead, so that end should be marked on
+the case.
 
-The disturbance check only looks at field strength. At one spot in the laboratory the strength
-was within 18\% of normal but the dip angle was $-19^\circ$ instead of about $-54^\circ$, so a
-wrong heading was accepted. Checking the dip angle as well would catch this.
-
-In a pocket the heading swings with every stride, and the gesture has to be repeated if the
-board shifts. The heading is relative to magnetic north, which is about $20^\circ$ east of true
-north in Auckland. Finally, the step length constant $K$ was not calibrated, the distance was
-not checked against a measured course, and all trials used one person on a small number of
-routes.
+The disturbance check only looks at field strength, so one laboratory spot with a normal
+strength but a dip angle of $-19^\circ$ instead of $-54^\circ$ passed; checking the dip angle
+would catch this. The heading is
+relative to magnetic north, about $20^\circ$ east of true north in Auckland. Finally, the step
+length constant $K$ was not calibrated, the distance was not checked against a measured course,
+and all trials used one person.
 
 \section{Conclusion}
-We built a prototype that counts steps and reports heading in real time on the SensorTile and
-sends both to a phone over Bluetooth. With the board in a trouser pocket, the step count was
-exact or within 4\%, and the heading on long straight walks was within about $3^\circ$ of a
-phone compass. Using the gyroscope alongside the magnetometer kept the heading working near
-steel, and the gesture and gait learning mean the board does not have to be worn one fixed way.
+Our SensorTile prototype counts steps and reports heading in real time over Bluetooth. With the
+board in a pocket the step count was within 1.3\% over 239 steps, and held flat the heading was
+$4.3^\circ$ from a phone compass on average. The gyroscope kept the heading working near steel,
+and the forward gesture lets the board be worn any way round.
 
 \begin{thebibliography}{8}
 \bibitem{jin2011}
